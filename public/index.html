@@ -313,9 +313,10 @@ pre.json{font:12px/1.6 var(--mono);background:var(--ink);border:1px solid var(--
     Maestro <small>conduct Claude Code</small>
   </div>
   <div class="annunciators" id="ann"></div>
-  <!-- Launched from Maestro.exe there is no console to Ctrl+C, so the app needs
-       its own way out. Hidden unless the page is running as an installed app. -->
-  <button class="btn sm ghost hidden" id="quit" title="Stop the Maestro server and close this window">Quit</button>
+  <!-- Launched from a launcher there is no console to Ctrl+C. Closing the window
+       stops the server too (see presence.js); this is the deliberate way, and it
+       does not wait out the grace period. Hidden unless a launcher started us. -->
+  <button class="btn sm ghost hidden" id="quit" title="Stop the Maestro server now and close this window">Quit</button>
 </header>
 
 <nav role="tablist" aria-label="Sections">
@@ -753,8 +754,22 @@ async function loadSessions() {
   renderSessions();
 }
 
+/* -------------------------------------------------------------- presence */
+// Closing the window is the stop gesture people actually make, and X never
+// reached the server: it survived with no console and no window, held the port,
+// and kept serving from a directory that had since been moved out from under
+// it. This stream is how the server knows a window exists - it is never read
+// from, only held open, and the server exits once the last one drops.
+// EventSource reconnects on its own, so a refresh is a blip well inside that
+// grace period. Held in a variable so nothing collects it.
+let presenceStream = null;
+function initPresence() {
+  try { presenceStream = new EventSource('/api/presence'); }
+  catch { /* no EventSource: back to Quit, or Task Manager */ }
+}
+
 /* ------------------------------------------------------------------ quit */
-// Only offered when Maestro.exe started the server, because then there is no
+// Only offered when a launcher started the server, because then there is no
 // console to Ctrl+C. Started from a terminal, Ctrl+C is the expected way out
 // and a stray Quit button would just be a trap.
 function initQuit() {
@@ -1783,6 +1798,9 @@ if (!SERVED) {
   fatal('Open http://localhost:4144 instead - this page cannot run from a file:// URL.', true);
   showNotServed();
 } else {
+  // Before anything else, and not behind loadMeta: while this stream is not
+  // open the server counts itself as having no UI.
+  initPresence();
   applyLibState();
   loadMeta()
     // Restore the tab only after meta lands: the lib/files/guard loaders and

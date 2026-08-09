@@ -21,8 +21,9 @@ If the port is taken: `MAESTRO_PORT=4145 node server.js`.
 
 **On Windows, double-click `Maestro.exe` instead.** It starts the server with no
 console window, waits for it to answer, and opens the UI in app mode - no address
-bar, no tab strip, and a **Quit** button in the header to stop the server (there is
-no terminal to Ctrl+C). macOS/Linux run **`./start.sh`**.
+bar, no tab strip, and a **Quit** button in the header to stop the server at once
+(there is no terminal to Ctrl+C). Closing the window stops it too.
+macOS/Linux run **`./start.sh`**.
 
 **On a managed work machine, use `start.cmd` and delete `Maestro.exe`.** Corporate
 antivirus and EDR quarantine `Maestro.exe` on sight, and they are not wrong to: it
@@ -39,9 +40,23 @@ Double-clicking it while Maestro is already running just opens the UI again
 instead of colliding on the port. Nothing in the project reads `Maestro.exe` at
 run time, so deleting it costs you nothing.
 
-Because there is no console left behind, there is nothing to Ctrl+C - stop Maestro
-with the **Quit** button in the header. `start.cmd` sets the same
-`MAESTRO_NO_OPEN` flag the exe does, which is what tells the UI to show it.
+Because there is no console left behind, there is nothing to Ctrl+C. **Closing the
+window stops the server**, about ten seconds later; the **Quit** button in the
+header stops it immediately. `start.cmd` sets the same `MAESTRO_NO_OPEN` flag the
+exe does, which is what shows the button and what arms the shutdown - started from
+a terminal, Ctrl+C is the way out and Maestro never exits on its own.
+
+The window close is not a click handler: the page holds one `/api/presence` stream
+open for as long as it is on screen, and the server exits once the last one has
+been gone for its grace period. A socket rather than a goodbye message, because a
+window also dies by Alt+F4, by Task Manager, and by Windows restarting for updates
+- and because timers in a minimised window get throttled. A refresh reconnects far
+inside the grace period, and a second window is simply a second stream. A server
+whose browser never appears at all gives up after two minutes. This is the fix for
+a real failure: two servers were found still holding ports 4144 and 4188 hours
+after the folder they were launched from had been moved, each serving `ENOENT ...
+public\index.html` to a launcher that had health-checked the port and concluded
+Maestro was already up.
 Override the browser with `MAESTRO_BROWSER=<full path to a Chromium browser>`.
 If the server does not come up, `start.cmd` re-runs it in the foreground so the
 error is on screen rather than swallowed by the hidden window.

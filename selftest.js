@@ -164,6 +164,44 @@ group('server hygiene');
 
   check('binds to loopback only', /listen\(\s*PORT\s*,\s*'127\.0\.0\.1'/.test(server),
     'server.listen must pin 127.0.0.1');
+
+  // The idle-shutdown timer belongs in the entry point, next to listen(), even
+  // though lib/presence.js is where it reads most naturally - beside the sockets
+  // it watches. A lib module that starts a timer at require time makes this file
+  // hang, because the checks below require those modules directly.
+  const libOnly = libFiles.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+  check('no setInterval in lib/', !/setInterval\s*\(/.test(stripComments(libOnly)),
+    'timers must live in server.js - selftest requires lib modules directly');
+}
+
+/* --------------------------------------------------------------- presence */
+group('presence (closing the window stops the server)');
+{
+  const { EventEmitter } = require('events');
+  const { attach, orphanedFor, everConnected, count } = require('./lib/presence');
+  // attach() only writes headers and one comment line, then waits for 'close'.
+  const win = () => Object.assign(new EventEmitter(), { writeHead() {}, write() {} });
+  const later = (ms) => Date.now() + ms;
+
+  check('a server nobody connected to is orphaned from boot', orphanedFor(later(60_000)) >= 60_000,
+    'a launcher that never opens a browser must not leave a server behind');
+  check('nothing has connected yet', everConnected() === false);
+
+  const a = win(), b = win();
+  attach({}, a);
+  check('an open window is not orphaned', orphanedFor(later(60_000)) === 0, 'orphaned while a window is open');
+  check('a connection is remembered', everConnected() === true);
+
+  attach({}, b);
+  a.emit('close');
+  check('a second window keeps it alive', orphanedFor(later(60_000)) === 0 && count() === 1,
+    'closing one of two windows must not stop the server');
+
+  b.emit('close');
+  check('the last window closing starts the clock', orphanedFor(later(9_000)) >= 9_000, 'clock did not start');
+  b.emit('close');
+  check('a duplicate close does not restart the clock', orphanedFor(later(9_000)) >= 9_000,
+    'req and res can both report close; the second must not extend the grace period');
 }
 
 /* -------------------------------------------------------------- packaging */

@@ -22,6 +22,7 @@
  *   guardrails.js  the generated PreToolUse hook and its deny-rule mirror
  *   library.js     commands / agents / skills as files
  *   files.js       the narrow file explorer over ~/.claude
+ *   presence.js    who still has the UI open, so a closed window can stop us
  */
 'use strict';
 
@@ -33,6 +34,7 @@ const { log, send } = require('./lib/util');
 const { guardRequest } = require('./lib/http-guard');
 const { routes } = require('./lib/routes');
 const { pruneDigests } = require('./lib/digests');
+const { touch, orphanedFor, everConnected } = require('./lib/presence');
 
 // A config tool must not die on a background error and leave the UI unreachable.
 process.on('uncaughtException', (e) => log('UNCAUGHT', e && e.stack || e));
@@ -48,6 +50,10 @@ const server = http.createServer(async (req, res) => {
     return send(res, 403, { error: denied });
   }
 
+  // A request that got this far came from the UI or from a launcher checking
+  // whether to start one, and either way a window is open or about to be.
+  touch();
+
   try {
     const handler = routes[route];
     // Awaited inside the try: an async handler that throws must still become a
@@ -60,6 +66,32 @@ const server = http.createServer(async (req, res) => {
 });
 
 pruneDigests();
+
+// Closing the window is the only stop gesture most people make, and X used not
+// to reach us at all: the server outlived its own UI, held the port, and went on
+// serving an install root that had since moved. The page holds an event stream
+// open while its window exists (lib/presence.js), so the last one closing is
+// what stops us.
+//
+// Only under a launcher. Started from a terminal, Ctrl+C is the expected way out
+// and a server that quit on its own because nobody had pointed a browser at it
+// would be a worse surprise than a stray process. Same signal the UI uses to
+// decide whether to offer the Quit button.
+if (process.env.MAESTRO_NO_OPEN) {
+  const ORPHAN_MS = 10_000;     // a refresh reconnects in a fraction of this
+  const STARTUP_MS = 120_000;   // a cold browser, first launch, busy machine
+  const watch = setInterval(() => {
+    const orphaned = orphanedFor();
+    if (!orphaned) return;
+    // Until the first window ever connects the clock is the boot clock, and a
+    // launcher can take a while to get a browser on screen. After that, a
+    // closed window is a closed window.
+    if (orphaned < (everConnected() ? ORPHAN_MS : STARTUP_MS)) return;
+    log('no UI connected for ' + Math.round(orphaned / 1000) + 's - exiting');
+    process.exit(0);
+  }, 5000);
+  watch.unref();
+}
 
 // Browsers keep a socket open for minutes and write the next request onto it
 // without checking. Node's 5s default closes idle sockets far sooner, so the

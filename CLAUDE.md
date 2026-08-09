@@ -29,6 +29,12 @@ inside Maestro" in README.md — that boundary is deliberate and keeps the insta
   `listen()`. All work lives in `lib/`.
 - **`lib/routes.js`** is a flat table keyed `"METHOD /path"` → handler. Adding an endpoint means
   adding a key here; nothing else registers routes.
+- **`lib/presence.js` is how a closed window stops the server.** The page holds a
+  `GET /api/presence` event stream open for as long as it is on screen; `server.js` exits once
+  the last one has been gone ~10s (2min before the first one ever arrives). Armed only under
+  `MAESTRO_NO_OPEN`, the same launcher signal that reveals the Quit button — from a terminal,
+  Ctrl+C is the way out. Any request also counts as presence, so a launcher's health check
+  cannot lose the race against the page it is about to open.
 - **`public/index.html` is the entire frontend** — one ~100 KB file, inline `<script>`, no build
   step, no framework. Per-view state lives in plain objects near each view's code: `S` (sessions +
   settings), `G` (guardrails), `L` (library), `F` (files). Views are shown/hidden by `showView()`.
@@ -49,8 +55,10 @@ These are all regressions that shipped once. The tests grep `server.js` **and ev
 so moving code between modules will not quiet them.
 
 - **No side effects at require time.** Everything that *runs* — process handlers, `pruneDigests()`,
-  `listen()` — stays in `server.js`. `selftest.js` requires lib modules directly; a module that
-  starts work on require makes the suite hang or open a port.
+  `listen()`, the idle-shutdown timer — stays in `server.js`. `selftest.js` requires lib modules
+  directly; a module that starts work on require makes the suite hang or open a port. Enforced by
+  a grep for `setInterval` in `lib/`, because the shutdown timer reads most naturally next to the
+  sockets it watches — which is exactly where it must not go.
 - **Bundled files resolve from `ROOT`, never `__dirname`.** Handlers live in `lib/`, so
   `__dirname` silently 404s the whole UI. The test invokes `GET /` and the icon route against a
   stub response rather than grepping for the mistake.

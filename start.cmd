@@ -9,9 +9,9 @@ rem job with the node that Claude Code already requires, and has nothing to
 rem flag: no compiled binary, no download, no execution-policy bypass.
 rem
 rem It starts the server with no window, waits for it to answer, opens the UI,
-rem and then closes itself. Nothing is left on the taskbar - which means there
-rem is no console to Ctrl+C, so stop Maestro with the Quit button in the
-rem header (or end node.exe in Task Manager).
+rem and then closes itself. Nothing is left on the taskbar, so there is no
+rem console to Ctrl+C - closing the Maestro window stops the server about ten
+rem seconds later, and the Quit button in the header stops it at once.
 
 cd /d "%~dp0"
 if "%MAESTRO_PORT%"=="" set "MAESTRO_PORT=4144"

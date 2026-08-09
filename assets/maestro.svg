@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Maestro">
+  <!-- A conductor's baton caught mid-gesture, sweeping through the arc it just
+       traced. Kept in step with tools/make-icon.js, which rasterises the same
+       geometry into assets/maestro.ico for the executable. -->
+  <rect width="256" height="256" rx="52" fill="#16151A"/>
+  <rect x="21" y="21" width="214" height="214" rx="35" fill="none" stroke="#2A2831" stroke-width="2"/>
+
+  <!-- the gesture -->
+  <path d="M38.4 188.25 A103.5 103.5 0 0 1 217.6 188.25" fill="none" stroke="#575165" stroke-width="7"/>
+
+  <!-- ivory shaft, tapered to a fine point -->
+  <path d="M85.7 185.6 L199.7 61.7 L196.3 58.3 L74.3 174.4 Z" fill="#F2E9D8"/>
+  <!-- cork handle, painted over the shaft's base -->
+  <line x1="64" y1="196" x2="100" y2="160" stroke="#8A5738" stroke-width="26" stroke-linecap="round"/>
+  <!-- brass collar over the joint -->
+  <line x1="96" y1="164" x2="112" y2="148" stroke="#C8A24C" stroke-width="19" stroke-linecap="round"/>
+  <!-- the downbeat -->
+  <circle cx="198" cy="60" r="5.5" fill="#C8A24C"/>
+</svg>

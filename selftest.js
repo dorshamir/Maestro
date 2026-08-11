@@ -228,7 +228,7 @@ group('pricing');
     ['claude-opus-5', 5, 25],
     ['claude-opus-4-8', 5, 25],
     ['claude-opus-9-20991231', 5, 25],   // does not exist yet - must still price
-    ['claude-sonnet-5', 3, 15],
+    ['claude-sonnet-5', 2, 10],
     ['claude-haiku-4-5-20251001', 1, 5],
     ['claude-fable-5', 10, 50],
     ['claude-mythos-5', 10, 50],
@@ -301,6 +301,68 @@ group('token counting (transcript dedup)');
     check('<synthetic> excluded from model list',
       !('<synthetic>' in d.byModel), 'synthetic notices are not API usage');
     check('tool use still detected across split lines', d.bashes === 1, `bashes=${d.bashes}`);
+  } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
+}
+
+/* ------------------------------------------------- per-attempt (iterations) */
+group('token counting (usage.iterations)');
+{
+  const { computeDigest } = require('./lib/digests');
+  const { priceUsage, pricing } = require('./lib/pricing');
+
+  // A turn that consults the advisor runs more than one model, and the API bills
+  // each attempt separately. `usage.iterations` is the per-attempt record; the
+  // top-level usage object describes ONLY the attempt that produced the returned
+  // message, so pricing the top level silently drops every advisor consultation
+  // - measured at 13%-110% of a session's real spend on real transcripts.
+  const tmp = path.join(os.tmpdir(), 'maestro-selftest-iter-' + process.pid + '.jsonl');
+  const usage = {
+    input_tokens: 2, output_tokens: 155,
+    cache_read_input_tokens: 41338,
+    cache_creation: { ephemeral_5m_input_tokens: 1351, ephemeral_1h_input_tokens: 0 },
+    speed: 'standard',
+    iterations: [
+      { type: 'message', input_tokens: 2, output_tokens: 487,
+        cache_read_input_tokens: 39711,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1627 } },
+      { type: 'advisor_message', model: 'claude-fable-5',
+        input_tokens: 43021, output_tokens: 5078,
+        cache_read_input_tokens: 0,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } },
+      { type: 'message', input_tokens: 2, output_tokens: 155,
+        cache_read_input_tokens: 41338,
+        cache_creation: { ephemeral_5m_input_tokens: 1351, ephemeral_1h_input_tokens: 0 } },
+    ],
+  };
+  const line = (blocks) => JSON.stringify({
+    type: 'assistant', requestId: 'req_1', timestamp: '2026-03-01T10:00:00Z',
+    advisorModel: 'claude-fable-5',
+    message: { id: 'msg_1', model: 'claude-opus-5', usage, content: blocks },
+  });
+  fs.writeFileSync(tmp, [
+    // still split across content-block lines: the dedup must survive this change
+    line([{ type: 'thinking' }]),
+    line([{ type: 'text' }]),
+  ].join('\n') + '\n');
+
+  try {
+    const d = computeDigest(tmp);
+    const adv = d.byModel['claude-fable-5'] || {};
+    check('the advisor\'s own attempt is counted',
+      adv.in === 43021 && adv.out === 5078, 'fable=' + JSON.stringify(adv));
+    const exec = d.byModel['claude-opus-5'] || {};
+    check('every executor attempt is counted, not just the returned one',
+      exec.out === 642, `out=${exec.out}, want 642 (487 + 155)`);
+    check('iteration cache writes keep their own TTL',
+      exec.cacheW === 1351 && exec.cacheW1h === 1627, 'exec=' + JSON.stringify(exec));
+    check('iterations are deduped per response, not per content-block line',
+      exec.in === 4, `in=${exec.in}, want 4 (2 + 2, counted once)`);
+    check('the advisor is priced at its own rate',
+      priceUsage({ 'claude-fable-5': adv }, pricing()) > 0.68,
+      'advisor spend must not be priced as the executor model');
+    const day = (d.byDay['2026-03-01'] || {}).models || {};
+    check('byDay splits attempts by model too',
+      (day['claude-fable-5'] || {}).out === 5078, 'day=' + JSON.stringify(day));
   } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
 }
 

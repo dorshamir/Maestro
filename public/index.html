@@ -92,6 +92,44 @@ header{display:flex;align-items:center;gap:var(--sp-4);flex-wrap:wrap;
 .u-row{display:flex;justify-content:space-between;gap:var(--sp-3);font:12px var(--mono);padding:3px 0}
 .u-row .l{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .u-row .r{color:var(--text);font-weight:600;white-space:nowrap}
+/* 30-day spend. Bars rather than a line: a day with no sessions is a real zero
+   worth seeing, and a line would draw straight through it. */
+.spark{display:flex;align-items:flex-end;gap:2px;height:54px;padding:0 1px;
+  border-bottom:1px solid var(--line)}
+.spark .sbar{flex:1;min-width:3px;background:var(--brass);opacity:.55;border-radius:2px 2px 0 0;
+  min-height:1px;transition:opacity .12s}
+.spark .sbar:hover{opacity:1}
+.spark .sbar.zero{background:var(--line);opacity:1}
+.spark .sbar.today{opacity:1;box-shadow:0 0 0 1px var(--brass)}
+.spark-ax{display:flex;justify-content:space-between;font:10px var(--mono);color:var(--faint);margin-top:4px}
+/* ── transcript search results ── */
+#searchres{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);
+  margin-bottom:var(--sp-4);overflow:hidden}
+#searchres .sr-head{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--line);font:12px var(--sans);color:var(--dim)}
+.sr-hit{padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--line)}
+.sr-hit:last-child{border-bottom:none}
+.sr-hit .sr-top{display:flex;gap:var(--sp-3);align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.sr-hit .sr-name{font:600 13px var(--sans);color:var(--text);cursor:pointer;text-align:left;
+  background:none;border:none;padding:0}
+.sr-hit .sr-name:hover{color:var(--brass);text-decoration:underline}
+.sr-hit .sr-where{font:11px var(--mono);color:var(--faint)}
+.sr-line{font:12px/1.5 var(--mono);color:var(--dim);padding:3px 0 3px 10px;
+  border-left:2px solid var(--line);margin:3px 0}
+.sr-line b{color:var(--brass);font-weight:600}
+/* ── mcp servers ── */
+.mcp-row{display:grid;grid-template-columns:1fr auto;gap:var(--sp-2) var(--sp-3);align-items:center;
+  padding:10px 0;border-bottom:1px solid var(--line)}
+.mcp-row:last-child{border-bottom:none}
+.mcp-main{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
+.mcp-name{font:600 13px var(--mono);color:var(--text)}
+.mcp-detail{grid-column:1/2;font:11px var(--mono);color:var(--dim);word-break:break-all}
+/* a key set in more than one scope: what the winner is beating */
+table.eff .beat{font:11px/1.6 var(--mono);color:var(--faint);margin-top:3px}
+table.eff .beat code{color:var(--dim)}
+.mcp-acts{grid-row:1/3;grid-column:2/3;display:flex;gap:var(--sp-2);align-items:center}
+@media (max-width:620px){.mcp-row{grid-template-columns:1fr}.mcp-acts{grid-row:auto;grid-column:1/2}}
+.sr-line .sr-role{color:var(--faint);text-transform:uppercase;font-size:9px;letter-spacing:1.1px;margin-right:6px}
 @media (max-width:620px){#usage .u-head{gap:var(--sp-3)}#usage .u-big{font-size:18px}}
 
 /* ── nav: brass baton under the active tab, over a double hairline ── */
@@ -324,6 +362,7 @@ pre.json{font:12px/1.6 var(--mono);background:var(--ink);border:1px solid var(--
   <button role="tab" id="tab-settings" data-view="settings" aria-controls="view-settings" aria-selected="false" tabindex="-1" title="Edit settings.json across User, Project, and Local scopes">Settings</button>
   <button role="tab" id="tab-guard" data-view="guard" aria-controls="view-guard" aria-selected="false" tabindex="-1" title="Hard-block files and commands with a PreToolUse hook - enforced in every permission mode, including bypass">Guardrails</button>
   <button role="tab" id="tab-lib" data-view="lib" aria-controls="view-lib" aria-selected="false" tabindex="-1" title="Manage slash commands, skills, and agents">Library</button>
+  <button role="tab" id="tab-mcp" data-view="mcp" aria-controls="view-mcp" aria-selected="false" tabindex="-1" title="MCP servers across user, project (.mcp.json) and local scopes, and whether each is approved to start">MCP</button>
   <button role="tab" id="tab-files" data-view="files" aria-controls="view-files" aria-selected="false" tabindex="-1" title="Browse and edit files under ~/.claude or a project's .claude folder">Files</button>
   <button role="tab" id="tab-effective" data-view="effective" aria-controls="view-effective" aria-selected="false" tabindex="-1" title="See the final merged settings.json Claude Code actually uses, after User, Project, and Local scopes combine">Effective config</button>
 </nav>
@@ -333,6 +372,7 @@ pre.json{font:12px/1.6 var(--mono);background:var(--ink);border:1px solid var(--
   <section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions">
     <div class="toolbar">
       <input type="search" id="q" placeholder="Filter by prompt, summary, file touched, folder, branch, session id…">
+      <button class="btn" id="deep-btn" title="Grep the conversations themselves, not just the session metadata the filter box matches">Search inside</button>
       <select id="sort-mode" aria-label="Sort sessions within each folder" title="Order sessions within each folder">
         <option value="recent">Sort: most recent</option>
         <option value="cost">Sort: most expensive</option>
@@ -373,6 +413,7 @@ pre.json{font:12px/1.6 var(--mono);background:var(--ink);border:1px solid var(--
     <div class="tabstrip" id="stabs"></div>
     <div id="transcript" class="hidden"></div>
     <div id="usage" class="hidden"></div>
+    <div id="searchres" class="hidden"></div>
     <div id="sessions"></div>
   </section>
 
@@ -417,21 +458,27 @@ pre.json{font:12px/1.6 var(--mono);background:var(--ink);border:1px solid var(--
       </div>
 
       <div class="card">
-        <h3>Hooks</h3>
+        <h3>Hooks <span id="hook-othercount" class="badge" style="font-weight:400"></span></h3>
         <div class="bd">
           <div id="hooks-list"></div>
-          <div class="addrow">
+          <div class="addrow" style="flex-wrap:wrap">
             <select id="hook-event">
               <option>PreToolUse</option><option>PostToolUse</option><option>UserPromptSubmit</option>
               <option>Notification</option><option>Stop</option><option>SubagentStop</option>
               <option>PreCompact</option><option>SessionStart</option><option>SessionEnd</option><option>ConfigChange</option>
             </select>
-            <input id="hook-matcher" placeholder="matcher (tool name / pattern, e.g. Bash or Edit|Write) - optional" style="max-width:280px">
+            <select id="hook-type" aria-label="Hook type">
+              <option value="command">command</option>
+              <option value="http">http</option>
+            </select>
+            <input id="hook-matcher" placeholder="matcher, e.g. Bash or Edit|Write" style="max-width:250px">
             <input id="hook-cmd" placeholder='command, e.g. python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/check.py"'>
+            <input id="hook-url" class="hidden" placeholder="https://hooks.example.com/claude">
             <input id="hook-timeout" type="number" placeholder="timeout s" style="width:90px">
-            <button class="btn sm" id="hook-add">Add hook</button>
+            <button class="btn sm amber" id="hook-add">Add hook</button>
+            <button class="btn sm ghost hidden" id="hook-cancel">Cancel edit</button>
           </div>
-          <div class="scope-note" style="margin:8px 0 0">command hooks only in this form - http / prompt / agent hook types can be added in the Raw JSON tab.</div>
+          <div class="scope-note" id="hook-help" style="margin:8px 0 0"></div>
         </div>
       </div>
 
@@ -557,6 +604,49 @@ pre.json{font:12px/1.6 var(--mono);background:var(--ink);border:1px solid var(--
     </div>
   </section>
 
+  <!-- ============================== MCP ============================== -->
+  <section id="view-mcp" role="tabpanel" aria-labelledby="tab-mcp" class="hidden">
+    <div class="toolbar">
+      <select id="mprojsel" style="max-width:420px"></select>
+      <button class="btn" id="mcp-reload">Reload</button>
+    </div>
+    <p class="scope-note">MCP servers give Claude Code extra tools. <b>User</b> servers load in every
+      project and live in <code>~/.claude.json</code>. <b>Project</b> servers live in the repo's
+      <code>.mcp.json</code>, so they are shared with anyone who clones it - and Claude Code will not
+      start one until it has been approved for that project, which is the state shown on each row.
+      <b>Local</b> servers are yours alone on this machine. Choose a project above to see the last two.
+      Adding a server arranges for a command to run the next time Claude Code starts, so treat it
+      with the same care as a hook.</p>
+    <div id="mcplist"></div>
+
+    <div class="card">
+      <h3>Add or replace a server</h3>
+      <div class="bd">
+        <div class="toolbar" style="padding:0;margin-bottom:10px">
+          <select id="mcp-scope" aria-label="Scope for the new server">
+            <option value="user">User - every project</option>
+            <option value="project">Project - .mcp.json, shared with the repo</option>
+            <option value="local">Local - this project, this machine only</option>
+          </select>
+          <input id="mcp-name" placeholder="server name, e.g. context7" style="max-width:220px">
+          <select id="mcp-kind" aria-label="Transport">
+            <option value="stdio">stdio - run a command</option>
+            <option value="http">http</option>
+            <option value="sse">sse</option>
+          </select>
+        </div>
+        <div id="mcp-stdio-fields">
+          <input id="mcp-cmd" placeholder="command, e.g. npx" style="width:100%;margin-bottom:8px">
+          <input id="mcp-args" placeholder="arguments, space separated - e.g. -y @upstash/context7-mcp" style="width:100%;margin-bottom:8px">
+        </div>
+        <input id="mcp-url" class="hidden" placeholder="https://example.com/mcp" style="width:100%;margin-bottom:8px">
+        <input id="mcp-env" placeholder="env, KEY=value KEY2=value2 (optional)" style="width:100%;margin-bottom:8px">
+        <p class="scope-note" style="margin:0 0 10px">An existing server of the same name in the same scope is replaced. A copy of the file is kept alongside it before anything is written.</p>
+        <button class="btn amber" id="mcp-add">Save server</button>
+      </div>
+    </div>
+  </section>
+
   <!-- ============================ FILES ============================ -->
   <section id="view-files" role="tabpanel" aria-labelledby="tab-files" class="hidden">
     <div class="toolbar">
@@ -669,6 +759,14 @@ const api = async (url, opts) => {
     }
   }
   const j = await r.json().catch(() => ({}));
+  // index.html is read from disk on every request, but the route table is
+  // require()d once at boot. A server left running across an update therefore
+  // serves the NEW page against its OLD routes - the button is there, the
+  // endpoint 404s, and "not found" sends people hunting for a bug in a feature
+  // that is simply not loaded yet. Name the real problem instead.
+  if (r.status === 404 && url.startsWith('/api/')) {
+    throw new Error(`This Maestro server has no ${url.split('?')[0]} - it is running older code than the page it served you. Restart Maestro (Quit, or close the window) and try again.`);
+  }
   if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), j);
   return j;
 };
@@ -710,7 +808,7 @@ const LS = {
     try { localStorage.setItem('maestro.' + key, JSON.stringify(value)); } catch { /* private mode / quota */ }
   },
 };
-const S = { meta: null, sessions: [], scope: 'user', dir: '', doc: {}, rawMode: false, dirty: false, file: '', sortMode: 'recent', showArchived: false };
+const S = { meta: null, sessions: [], scope: 'user', dir: '', doc: {}, rawMode: false, dirty: false, file: '', sortMode: 'recent', showArchived: false, search: null, staleSessions: false };
 
 /* ------------------------------------------------------------- header */
 async function loadMeta() {
@@ -719,7 +817,7 @@ async function loadMeta() {
   $('#ann').innerHTML = `
     <div class="ann lit"><div class="k">Projects</div><div class="v">${nProj}</div></div>
     <div class="ann" id="ann-sess"><div class="k">Sessions</div><div class="v">–</div></div>
-    <div class="ann lit" id="ann-usd" title="Total across every stored session"><div class="k">Est. cost</div><div class="v">–</div><div class="sub"></div></div>
+    <div class="ann lit" id="ann-usd" title="Estimated cost of sessions touched in the last 30 days. There is no all-time figure: it only grows, so it cannot tell you whether this month cost more than the last one."><div class="k">Est. cost 30d</div><div class="v">–</div><div class="sub"></div></div>
     <div class="ann ${S.meta.claudeCli ? 'ok' : 'err'}"><div class="k">Claude CLI</div><div class="v">${S.meta.claudeCli ? 'FOUND' : 'MISSING'}</div></div>
     <div class="ann"><div class="k">Platform</div><div class="v">${esc(S.meta.platform)}</div></div>`;
   initQuit();
@@ -733,6 +831,7 @@ function fillProjectSelects() {
   $('#gprojsel').innerHTML = '<option value="">- choose project -</option>' + opts;
   $('#lprojsel').innerHTML = '<option value="">- choose project -</option>' + opts;
   $('#fprojsel').innerHTML = '<option value="">- choose project -</option>' + opts;
+  $('#mprojsel').innerHTML = '<option value="">- choose project (for .mcp.json and local servers) -</option>' + opts;
 }
 
 /* ------------------------------------------------------------ sessions */
@@ -746,9 +845,8 @@ async function loadSessions() {
   S.pricingAsOf = j.pricingAsOf; S.pricingCustom = j.pricingCustom;
   const spend = document.getElementById('ann-usd');
   if (spend && j.summary) {
-    spend.querySelector('.v').textContent = usd(j.summary.usd);
-    spend.querySelector('.sub').textContent =
-      tk(j.summary.tokens.in + j.summary.tokens.out) + ' tok in+out';
+    spend.querySelector('.v').textContent = usd(j.summary.last30.usd);
+    spend.querySelector('.sub').textContent = j.summary.last30.sessions + ' sessions';
   }
   renderUsage();
   renderSessions();
@@ -762,10 +860,64 @@ async function loadSessions() {
 // from, only held open, and the server exits once the last one drops.
 // EventSource reconnects on its own, so a refresh is a blip well inside that
 // grace period. Held in a variable so nothing collects it.
+//
+// But "on its own" has a hole that used to strand this page: an EventSource
+// whose *connection attempt* is refused goes to CLOSED and never retries. Once
+// the server had quit - which it did, on a 10s timer, the moment a suspend or a
+// throttled reconnect broke the stream - the page held no stream at all, so
+// even a restarted server saw no window and quit again. Reopen it ourselves,
+// and reopen it at once when the user comes back to the window rather than
+// waiting on a timer the browser is free to throttle while it is hidden.
 let presenceStream = null;
 function initPresence() {
-  try { presenceStream = new EventSource('/api/presence'); }
-  catch { /* no EventSource: back to Quit, or Task Manager */ }
+  if (presenceStream && presenceStream.readyState !== 2) return;  // 2 = CLOSED
+  try {
+    presenceStream = new EventSource('/api/presence');
+    presenceStream.onerror = () => {
+      // OPEN/CONNECTING means it is retrying by itself; only CLOSED is final.
+      if (presenceStream.readyState === 2) setTimeout(initPresence, 2000);
+    };
+    // Claude Code wrote to a transcript. This arrives while the user is working
+    // in a terminal Maestro opened for them, so it refreshes quietly and never
+    // interrupts: no toast, and nothing happens at all while the window is
+    // hidden or while a transcript tab is up, because re-rendering underneath
+    // someone who is reading is worse than a list that is a minute old.
+    presenceStream.addEventListener('sessions', () => {
+      if (document.hidden || T.active !== null) { S.staleSessions = true; return; }
+      S.staleSessions = false;
+      loadSessions().catch(() => {});
+    });
+  } catch { /* no EventSource: the health ping below still counts as presence */ }
+}
+if (SERVED) {
+  ['visibilitychange', 'focus', 'online', 'pageshow'].forEach((e) =>
+    window.addEventListener(e, () => {
+      if (document.hidden) return;
+      initPresence();
+      // A refresh that was held back while the window was hidden or a
+      // transcript was open lands now, when it is no longer in the way.
+      if (S.staleSessions && T.active === null) { S.staleSessions = false; loadSessions().catch(() => {}); }
+    }));
+  // Closing the window should free the port promptly, and a dropped socket on
+  // its own cannot say whether that is what happened. pagehide is the last
+  // event a closing window reliably fires; the server treats it as "wait the
+  // short grace, not the long one", so a refresh - which fires it too - is
+  // taken back by the reconnect that follows. sendBeacon because the window is
+  // already going away; same-origin, so the Blob type satisfies the CSRF guard
+  // without needing a preflight it could never complete.
+  window.addEventListener('pagehide', () => {
+    try {
+      navigator.sendBeacon('/api/bye', new Blob(['{}'], { type: 'application/json' }));
+    } catch { /* the long grace still frees the port */ }
+  });
+  // A second, independent way to say "a window is still here": any request at
+  // all resets the server's clock. A closed window runs no timers, so this
+  // cannot keep a dead page's server alive - it only covers the case where the
+  // stream is wedged and the page is not.
+  setInterval(() => {
+    if (document.hidden) return;
+    fetch('/api/health', { cache: 'no-store' }).catch(() => {});
+  }, 25_000);
 }
 
 /* ------------------------------------------------------------------ quit */
@@ -781,12 +933,58 @@ function initQuit() {
     try {
       await fetch('/api/quit', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
     } catch { /* the server exits mid-response */ }
-    document.body.innerHTML = '<div class="empty" style="margin-top:20vh">Maestro has stopped. You can close this window.</div>';
-    setTimeout(() => window.close(), 400);
+    closeWindow();
   });
+}
+// Quit should leave nothing behind, including the window. Chrome refuses
+// window.close() for any page it did not open itself, which is every page the
+// launcher's fallback path produces (`start "" http://localhost:4144` opens an
+// ordinary tab, not an --app window). Re-opening the document onto itself makes
+// the page its own opener, which is the one thing that still lifts that
+// restriction; in an --app window close() was already allowed and this is a
+// no-op. The goodbye panel is the *fallback*, shown only once the browser has
+// actually refused - it used to appear immediately, so even a successful close
+// flashed a message telling the user to do what had just been done for them.
+function closeWindow() {
+  try { window.open('', '_self'); } catch { /* not permitted here; try anyway */ }
+  try { window.close(); } catch { /* same */ }
+  setTimeout(() => {
+    if (document.hidden) return;   // going away, just slowly
+    document.body.innerHTML =
+      '<div class="empty" style="margin-top:20vh">Maestro has stopped.<br><br>'
+      + '<span style="color:var(--faint)">This browser will not let a page close its own window, '
+      + 'so this tab has to go by hand.</span></div>';
+  }, 500);
 }
 
 /* -------------------------------------------------------- usage summary */
+// Thirty bars, one per calendar day, scaled to the busiest of them. Days are
+// server-side buckets of when the spend actually happened - not of when the
+// transcript file was last written, which used to drop a month-old session's
+// whole cost onto the day you last touched it.
+function renderSpark(daily) {
+  if (!Array.isArray(daily) || !daily.length) return '';
+  const max = Math.max(...daily.map((d) => d.usd), 0);
+  const today = daily[daily.length - 1].day;
+  const fmt = (day) => {
+    const [y, m, dd] = day.split('-').map(Number);
+    return new Date(y, m - 1, dd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+  const bars = daily.map((d) => {
+    // A zero day is drawn as a hairline in the line colour rather than as a
+    // very short brass bar, so "nothing happened" cannot read as "a little".
+    const h = max > 0 && d.usd > 0 ? Math.max(4, (d.usd / max) * 100) : 0;
+    const cls = 'sbar' + (d.usd > 0 ? '' : ' zero') + (d.day === today ? ' today' : '');
+    return `<div class="${cls}" style="height:${h.toFixed(1)}%" title="${esc(fmt(d.day) + ' · ' + (d.usd > 0 ? '$' + d.usd.toFixed(2) : 'no sessions'))}"></div>`;
+  }).join('');
+  const busiest = daily.reduce((a, d) => (d.usd > a.usd ? d : a), daily[0]);
+  return `
+    <h4 style="font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint);margin:0 0 var(--sp-2)">Last 30 days</h4>
+    <div class="spark" role="img" aria-label="Daily estimated spend over the last 30 days. Busiest day ${esc(fmt(busiest.day))} at ${esc(usd(busiest.usd).replace(/<[^>]*>/g, ''))}.">${bars}</div>
+    <div class="spark-ax"><span>${esc(fmt(daily[0].day))}</span>
+      <span>peak ${esc(fmt(busiest.day))} · ${max > 0 ? esc(busiest.usd.toFixed(2)) : '0.00'}</span>
+      <span>today</span></div>`;
+}
 function renderUsage() {
   const box = $('#usage'), s = S.summary;
   if (!s || !s.sessions) { box.classList.add('hidden'); return; }
@@ -803,18 +1001,20 @@ function renderUsage() {
   const top = s.top.map((p) => `
     <div class="u-row"><span class="l" title="${esc(p.cwd)}">${esc(p.cwd.replace(/^.*[\\/]/, '') || p.cwd)}</span>
       <span class="r">${usd(p.usd)}</span></div>`).join('');
+  const spark = renderSpark(s.daily);
 
   box.innerHTML = `
     <div class="u-head" id="u-toggle" role="button" tabindex="0" aria-expanded="${box.classList.contains('open')}">
-      <div class="u-stat"><span class="u-cap">Est. total cost</span><span class="u-big">${usd(s.usd)}</span></div>
-      <div class="u-stat"><span class="u-cap">Last 7 days</span><span class="n">${usd(s.last7.usd)} · ${s.last7.sessions} sess</span></div>
-      <div class="u-stat"><span class="u-cap">Last 30 days</span><span class="n">${usd(s.last30.usd)} · ${s.last30.sessions} sess</span></div>
+      <div class="u-stat"><span class="u-cap">Last 7 days</span><span class="u-big">${usd(s.last7.usd)}</span></div>
+      <div class="u-stat"><span class="u-cap">Last 30 days</span><span class="u-big">${usd(s.last30.usd)}</span></div>
+      <div class="u-stat"><span class="u-cap">Sessions 7 / 30d</span><span class="n">${s.last7.sessions} / ${s.last30.sessions}</span></div>
       <div class="u-stat"><span class="u-cap">Tokens in → out</span><span class="n">${tk(t.in)} → ${tk(t.out)}</span></div>
       <div class="u-stat"><span class="u-cap">Cache read</span><span class="n">${tk(t.cacheR)}</span></div>
       <span class="u-chev">▶</span>
     </div>
     <div class="u-body">
-      <h4 style="font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint);margin:0 0 var(--sp-2)">Cost by model</h4>
+      ${spark}
+      <h4 style="font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint);margin:${spark ? 'var(--sp-4)' : '0'} 0 var(--sp-2)">Cost by model</h4>
       ${models || '<p class="scope-note">No model usage recorded.</p>'}
       <div class="u-grid">
         <div>
@@ -1072,6 +1272,83 @@ $('#fold-all').addEventListener('click', () => {
 $('#sort-mode').addEventListener('change', () => { S.sortMode = $('#sort-mode').value; renderSessions(); });
 $('#show-archived').addEventListener('change', () => { S.showArchived = $('#show-archived').checked; renderSessions(); });
 
+/* ------------------------------------------------- search inside transcripts */
+// The filter box matches metadata: opening prompt, digest, files touched,
+// folder, branch, id. It cannot find a conversation by what was said in it,
+// which is the only way to answer "where did I work that out". This asks the
+// server to grep the transcripts themselves.
+async function runDeepSearch() {
+  const q = $('#q').value.trim();
+  const box = $('#searchres');
+  if (q.length < 2) { toast('Type at least 2 characters, then Search inside', 'err'); return; }
+  box.classList.remove('hidden');
+  box.innerHTML = '<div class="empty">searching every transcript…</div>';
+  try {
+    S.search = await api('/api/search?q=' + encodeURIComponent(q));
+    renderSearch();
+  } catch (err) {
+    searchError(err.message);
+  }
+}
+// Any dead end here still needs a way out. Without the Clear button the only
+// escape from an error was reloading the page.
+function searchError(msg) {
+  S.search = null;
+  $('#searchres').classList.remove('hidden');
+  $('#searchres').innerHTML = `
+    <div class="sr-head"><span style="color:var(--deny)">${esc(msg)}</span>
+      <button class="btn sm ghost" id="sr-clear" style="margin-left:auto">Clear</button></div>`;
+}
+// Highlight the term inside an already-escaped snippet. Escape first, mark
+// second - the other order would let a transcript containing markup write it
+// into the page.
+function markHit(text, q) {
+  const safe = esc(text);
+  const needle = esc(q);
+  if (!needle) return safe;
+  const parts = safe.toLowerCase().split(needle.toLowerCase());
+  if (parts.length < 2) return safe;
+  let out = '', at = 0;
+  for (let i = 0; i < parts.length - 1; i++) {
+    at += parts[i].length;
+    out += safe.slice(at - parts[i].length, at) + '<b>' + safe.slice(at, at + needle.length) + '</b>';
+    at += needle.length;
+  }
+  return out + safe.slice(at);
+}
+function renderSearch() {
+  const j = S.search, box = $('#searchres');
+  if (!j) { box.classList.add('hidden'); return; }
+  const ROLE = { user: 'you', ai: 'claude', think: 'thinking', tool: 'tool' };
+  const head = `
+    <div class="sr-head">
+      <b style="color:var(--text)">${j.sessions} session${j.sessions === 1 ? '' : 's'}</b>
+      <span>${j.matches} match${j.matches === 1 ? '' : 'es'} for “${esc(j.query)}” · scanned ${j.scanned} transcript${j.scanned === 1 ? '' : 's'} in ${j.ms}ms</span>
+      ${j.partial ? '<span class="badge" style="color:var(--brass);border-color:var(--brass)" title="Stopped at the result cap or the time budget - narrow the term to see the rest">partial</span>' : ''}
+      ${j.skipped ? `<span class="badge" title="Transcripts too large to grep inside a request">${j.skipped} skipped</span>` : ''}
+      <button class="btn sm ghost" id="sr-clear" style="margin-left:auto">Clear</button>
+    </div>`;
+  const body = j.results.length ? j.results.map((r) => `
+    <div class="sr-hit">
+      <div class="sr-top">
+        <button class="sr-name" data-viewt="${esc(r.file)}" data-title="${esc((r.name || 'session').slice(0, 40))}">${esc(r.name || '(unnamed session)')}</button>
+        <span class="sr-where">${esc(r.cwd.replace(/^.*[\\/]/, '') || r.cwd)} · ${rel(r.mtime)}</span>
+      </div>
+      ${r.hits.map((h) => `<div class="sr-line"><span class="sr-role">${ROLE[h.r] || h.r}</span>${markHit(h.t, j.query)}</div>`).join('')}
+    </div>`).join('')
+    : `<div class="empty">Nothing in any transcript mentions “${esc(j.query)}”.</div>`;
+  box.innerHTML = head + body;
+}
+$('#deep-btn').addEventListener('click', runDeepSearch);
+// Enter in the filter box means "I meant it" - the filter itself is live as you
+// type, so the keystroke is otherwise spare.
+$('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') runDeepSearch(); });
+$('#searchres').addEventListener('click', (e) => {
+  if (e.target.closest('#sr-clear')) { S.search = null; $('#searchres').classList.add('hidden'); return; }
+  const b = e.target.closest('[data-viewt]');
+  if (b) openTab(b.dataset.viewt, b.dataset.title);
+});
+
 /* ------------------------------------------------- transcript tabs (read-only) */
 const T = { tabs: [], active: null, cache: {} };
 function renderTabs() {
@@ -1087,8 +1364,12 @@ async function showTab(file) {
   const isList = file === null;
   $('#sessions').classList.toggle('hidden', !isList);
   $('#q').parentElement.classList.toggle('hidden', !isList);
+  $('#searchres').classList.toggle('hidden', !isList || !S.search);
   $('#transcript').classList.toggle('hidden', isList);
-  if (isList) return;
+  if (isList) {
+    if (S.staleSessions) { S.staleSessions = false; loadSessions().catch(() => {}); }
+    return;
+  }
   if (!T.cache[file]) {
     $('#transcript').innerHTML = '<div class="empty">loading transcript…</div>';
     try { T.cache[file] = await api('/api/transcript?file=' + encodeURIComponent(file)); }
@@ -1196,8 +1477,13 @@ function markDirty(v) { S.dirty = v; $('#dirty').classList.toggle('hidden', !v);
 async function loadSettings() {
   if (S.scope !== 'user' && !S.dir) {
     $('#settings-file').textContent = 'choose a project above';
+    hookFormClear();
     S.doc = {}; renderForm(); return;
   }
+  // Any pending hook edit points at indices inside the *old* S.doc. Carrying it
+  // across a scope switch would splice whatever happens to sit at those
+  // coordinates in the new file - deleting a hook the user never touched.
+  hookFormClear();
   const j = await api(`/api/settings?scope=${S.scope}&dir=${encodeURIComponent(S.dir)}`);
   S.file = j.file;
   $('#settings-file').textContent = j.file + (j.exists ? '' : '  (will be created)');
@@ -1206,6 +1492,25 @@ async function loadSettings() {
   if (S.doc === null) { setRawMode(true); $('#raw').value = j.content; }
   else { $('#raw').value = JSON.stringify(S.doc, null, 2); renderForm(); }
   markDirty(false);
+  refreshHookScopeCount();
+}
+// Hooks concatenate across scopes rather than overriding, so the file on screen
+// is never the whole story - a project hook and a user hook both fire. Count
+// what else is out there so an empty-looking Hooks card cannot be read as
+// "nothing runs here".
+async function refreshHookScopeCount() {
+  const el = $('#hook-othercount');
+  el.textContent = '';
+  const count = (hooks) => Object.values(hooks || {})
+    .reduce((a, ms) => a + (ms || []).reduce((b, m) => b + ((m.hooks || []).length), 0), 0);
+  try {
+    const eff = await api('/api/effective?dir=' + encodeURIComponent(S.dir || ''));
+    const others = count(eff.merged.hooks) - count((S.doc || {}).hooks);
+    if (others > 0) {
+      el.textContent = `+${others} from other scopes`;
+      el.title = 'Hooks defined in the other settings files that also fire here. Effective config shows all of them.';
+    }
+  } catch { /* the count is a nicety; never let it break the settings view */ }
 }
 function renderForm() {
   const d = S.doc || {};
@@ -1218,14 +1523,23 @@ function renderForm() {
   const hooks = d.hooks || {};
   const hfrag = [];
   for (const [ev, matchers] of Object.entries(hooks)) {
+    const meta = HOOK_EVENTS[ev];
     (matchers || []).forEach((m, mi) => (m.hooks || []).forEach((h, hi) => {
+      // A matcher on an event that does not match on anything is not an error,
+      // but it is almost always someone expecting it to narrow the hook. Say so
+      // where they will see it, next to the hook itself.
+      const stray = m.matcher && meta && !meta.matcher
+        ? ` <span class="m" style="color:var(--brass)" title="${esc(ev)} fires once, with nothing to match against - this matcher is ignored">matcher ignored</span>` : '';
       hfrag.push(`<div class="hook"><span class="ev">${esc(ev)}</span>
         <div class="body">${m.matcher ? `<span class="m">[${esc(m.matcher)}]</span> ` : ''}${esc(h.command || h.url || h.type)}
-        ${h.timeout ? ` <span class="m">⏱ ${h.timeout}s</span>` : ''}</div>
+        ${h.type && h.type !== 'command' ? ` <span class="m">(${esc(h.type)})</span>` : ''}
+        ${h.timeout ? ` <span class="m">⏱ ${h.timeout}s</span>` : ''}${stray}</div>
+        <button class="btn sm" data-eh="${esc(ev)}:${mi}:${hi}">edit</button>
         <button class="btn sm danger" data-dh="${esc(ev)}:${mi}:${hi}">remove</button></div>`);
     }));
   }
   $('#hooks-list').innerHTML = hfrag.join('') || '<div class="scope-note" style="margin:0 0 6px">no hooks in this file</div>';
+  renderHookHelp();
   renderDefKeys();
   renderCatalog();
 }
@@ -1366,7 +1680,23 @@ $('#view-settings').addEventListener('click', (e) => {
     if (!m.hooks.length) S.doc.hooks[ev].splice(Number(mi), 1);
     if (!S.doc.hooks[ev].length) delete S.doc.hooks[ev];
     if (!Object.keys(S.doc.hooks).length) delete S.doc.hooks;
+    if (hookEditing === b.dataset.dh) hookFormClear();
     markDirty(true); renderForm();
+  } else if (b.dataset.eh) {
+    const [ev, mi, hi] = b.dataset.eh.split(':');
+    const m = S.doc.hooks[ev][Number(mi)];
+    const h = m.hooks[Number(hi)];
+    hookEditing = b.dataset.eh;
+    $('#hook-event').value = ev;
+    $('#hook-type').value = h.type === 'http' ? 'http' : 'command';
+    renderHookHelp();
+    $('#hook-matcher').value = m.matcher || '';
+    $('#hook-cmd').value = h.command || '';
+    $('#hook-url').value = h.url || '';
+    $('#hook-timeout').value = h.timeout || '';
+    $('#hook-add').textContent = 'Update hook';
+    $('#hook-cancel').classList.remove('hidden');
+    $('#hook-event').scrollIntoView({ block: 'center', behavior: 'smooth' });
   } else if (b.dataset.delkey) {
     delete S.doc[b.dataset.delkey];
     markDirty(true); renderForm();
@@ -1413,19 +1743,93 @@ $('#preset-safety').addEventListener('click', () => {
   for (const r of pack) if (!S.doc.permissions.deny.includes(r)) S.doc.permissions.deny.push(r);
   markDirty(true); renderForm(); toast('Safety pack added to deny list');
 });
+/* ------------------------------------------------------------------ hooks */
+// What each event is for, and whether a matcher means anything to it. Written
+// down here because the difference is invisible in settings.json: a matcher on
+// Stop parses fine, saves fine, and silently never narrows anything.
+const HOOK_EVENTS = {
+  PreToolUse:       { matcher: 'tool name, e.g. Bash or Edit|Write', d: 'Before a tool runs. The only event that can refuse one: exit 2 blocks the call and tells Claude why.' },
+  PostToolUse:      { matcher: 'tool name, e.g. Bash or Edit|Write', d: 'After a tool has run. Good for formatters, linters and audit logs.' },
+  UserPromptSubmit: { matcher: null, d: 'When you submit a prompt, before Claude sees it. Can inject context or refuse the turn.' },
+  Notification:     { matcher: null, d: 'When Claude Code raises a notification - waiting for input, permission needed.' },
+  Stop:             { matcher: null, d: 'When the main agent has finished responding.' },
+  SubagentStop:     { matcher: null, d: 'When a subagent (Task tool) finishes.' },
+  PreCompact:       { matcher: 'manual or auto', d: 'Before the context window is compacted.' },
+  SessionStart:     { matcher: 'startup, resume, clear or compact', d: 'When a session starts or resumes.' },
+  SessionEnd:       { matcher: null, d: 'When a session ends.' },
+  ConfigChange:     { matcher: null, d: 'When settings change while a session is running.' },
+};
+// Which hook is being edited, as event:matcherIndex:hookIndex - null when the
+// form is adding. Editing is remove-then-insert at the same place, so a hook
+// keeps its position in the file rather than jumping to the end.
+let hookEditing = null;
+function renderHookHelp() {
+  const ev = $('#hook-event').value;
+  const meta = HOOK_EVENTS[ev] || {};
+  const m = $('#hook-matcher');
+  m.placeholder = meta.matcher ? `matcher: ${meta.matcher}` : 'no matcher for this event';
+  m.disabled = !meta.matcher;
+  m.classList.toggle('hidden', !meta.matcher);
+  const http = $('#hook-type').value === 'http';
+  $('#hook-cmd').classList.toggle('hidden', http);
+  $('#hook-url').classList.toggle('hidden', !http);
+  $('#hook-help').innerHTML = `<b>${esc(ev)}</b> - ${esc(meta.d || '')}` +
+    (http ? ' <b>HTTP hooks only fire for URLs allowed by <code>allowedHttpHookUrls</code></b>, which is a settings key like any other - add it below if it is not set.' : '') +
+    ' Hooks from User, Project and Local scope all run: a hook here adds to the others rather than replacing them.';
+}
+$('#hook-event').addEventListener('change', renderHookHelp);
+$('#hook-type').addEventListener('change', renderHookHelp);
+function hookFormClear() {
+  hookEditing = null;
+  $('#hook-cmd').value = ''; $('#hook-url').value = '';
+  $('#hook-matcher').value = ''; $('#hook-timeout').value = '';
+  $('#hook-add').textContent = 'Add hook';
+  $('#hook-cancel').classList.add('hidden');
+}
+$('#hook-cancel').addEventListener('click', hookFormClear);
 $('#hook-add').addEventListener('click', () => {
   if (!S.doc) return;
   const ev = $('#hook-event').value;
-  const cmd = $('#hook-cmd').value.trim();
-  if (!cmd) return toast('Enter a hook command', 'err');
-  const matcher = $('#hook-matcher').value.trim();
+  const type = $('#hook-type').value;
+  const meta = HOOK_EVENTS[ev] || {};
   const timeout = Number($('#hook-timeout').value) || undefined;
-  const entry = { hooks: [{ type: 'command', command: cmd, ...(timeout ? { timeout } : {}) }] };
-  if (matcher) entry.matcher = matcher;
+  if (timeout !== undefined && (!isFinite(timeout) || timeout <= 0)) return toast('Timeout must be a positive number of seconds', 'err');
+
+  let h;
+  if (type === 'http') {
+    const url = $('#hook-url').value.trim();
+    if (!url) return toast('Enter a hook URL', 'err');
+    if (!/^https?:\/\//i.test(url)) return toast('Hook URL must start with http:// or https://', 'err');
+    h = { type: 'http', url, ...(timeout ? { timeout } : {}) };
+  } else {
+    const cmd = $('#hook-cmd').value.trim();
+    if (!cmd) return toast('Enter a hook command', 'err');
+    h = { type: 'command', command: cmd, ...(timeout ? { timeout } : {}) };
+  }
+  const matcher = meta.matcher ? $('#hook-matcher').value.trim() : '';
+
   S.doc.hooks = S.doc.hooks || {};
+  if (hookEditing) {
+    // Drop the original first, then insert in its place. Editing the event or
+    // the matcher means it may not land back where it came from, which is why
+    // this is a remove-and-insert and not a field-by-field patch.
+    const [oev, omi, ohi] = hookEditing.split(':');
+    const om = S.doc.hooks[oev] && S.doc.hooks[oev][Number(omi)];
+    if (om) {
+      om.hooks.splice(Number(ohi), 1);
+      if (!om.hooks.length) S.doc.hooks[oev].splice(Number(omi), 1);
+      if (!S.doc.hooks[oev].length) delete S.doc.hooks[oev];
+    }
+  }
   S.doc.hooks[ev] = S.doc.hooks[ev] || [];
-  S.doc.hooks[ev].push(entry);
-  $('#hook-cmd').value = ''; $('#hook-matcher').value = ''; $('#hook-timeout').value = '';
+  // Reuse a matcher group that already exists so the file does not grow a
+  // separate entry per hook for the same matcher.
+  const group = S.doc.hooks[ev].find((g) => (g.matcher || '') === matcher);
+  if (group) { group.hooks = group.hooks || []; group.hooks.push(h); }
+  else S.doc.hooks[ev].push(matcher ? { matcher, hooks: [h] } : { hooks: [h] });
+
+  toast(hookEditing ? 'Hook updated - Save file to write it' : 'Hook added - Save file to write it');
+  hookFormClear();
   markDirty(true); renderForm();
 });
 $('#save-settings').addEventListener('click', async () => {
@@ -1712,8 +2116,23 @@ async function loadEffective() {
   const dir = $('#effsel').value;
   const j = await api('/api/effective?dir=' + encodeURIComponent(dir));
   const chip = (s) => s.split('+').map((x) => `<span class="chip ${x}">${x}</span>`).join('');
-  const rows = Object.entries(j.sources).map(([k, s]) =>
-    `<tr><td style="width:40%">${esc(k)}</td><td>${chip(s)}</td></tr>`).join('');
+  // A short, readable rendering of a value - "why isn't it what I set" is
+  // answered by seeing the two values side by side, not by a wall of JSON.
+  const brief = (v) => {
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    return String(s === undefined ? 'undefined' : s).replace(/\s+/g, ' ').slice(0, 90);
+  };
+  const rows = Object.entries(j.sources).map(([k, s]) => {
+    const o = (j.overridden || {})[k];
+    // Naming the scope that lost, and what it had, is the whole point: the
+    // winning scope alone still leaves you hunting for the file that is being
+    // ignored.
+    const beaten = o ? `<div class="beat">${o.beat.map((b) =>
+      `overrides <span class="chip ${esc(b.scope)}">${esc(b.scope)}</span> <code>${esc(brief(b.value))}</code>`).join('<br>')}</div>` : '';
+    return `<tr><td style="width:40%">${esc(k)}${beaten}</td><td>${chip(s)}${
+      o ? ` <code style="font:11px var(--mono);color:var(--dim)">${esc(brief(o.winner.value))}</code>` : ''}</td></tr>`;
+  }).join('');
+  const nOver = Object.keys(j.overridden || {}).length;
   const rules = ['deny', 'ask', 'allow'].map((list) => j.ruleSources[list].length ?
     `<div style="margin-bottom:10px"><b class="permcol ${list}" style="font:600 12px var(--mono)">${list}</b><br>` +
     j.ruleSources[list].map((r) => `<div class="rule">${chip(r.scope)}<span>${esc(r.rule)}</span></div>`).join('') + '</div>' : '').join('');
@@ -1722,14 +2141,140 @@ async function loadEffective() {
       ${j.layers.length ? j.layers.map((l) => `<div class="layerline">${chip(l.scope)} ${esc(l.file)}</div>`).join('') : '<div class="empty">no settings files found for this selection</div>'}
     </div></div>
     ${rules ? `<div class="card"><h3>Permission rules (merged across scopes)</h3><div class="bd">${rules}</div></div>` : ''}
-    <div class="card"><h3>Key provenance</h3><div class="bd">${rows ? `<table class="eff">${rows}</table>` : '<div class="empty">empty</div>'}</div></div>
+    <div class="card"><h3>Key provenance${nOver ? ` <span class="badge" style="color:var(--brass);border-color:var(--brass)" title="Keys set in more than one scope - the lower one is being ignored">${nOver} overridden</span>` : ''}</h3><div class="bd">${rows ? `<table class="eff">${rows}</table>` : '<div class="empty">empty</div>'}</div></div>
     <div class="card"><h3>Merged result</h3><div class="bd"><pre class="json">${esc(JSON.stringify(j.merged, null, 2))}</pre></div></div>
     <div class="scope-note">Approximation of Claude Code's own precedence (managed policies and CLI flags sit above these and aren't shown).</div>`;
 }
 $('#effsel').addEventListener('change', loadEffective);
 
+/* ------------------------------------------------------------------ mcp */
+// Three scopes, two files. User and Local both live inside ~/.claude.json -
+// Claude Code's own state file - so every write here is read-modify-write of
+// just the mcpServers subtree, with a backup taken first (see lib/mcp.js).
+const MC = { data: null, dir: '' };
+async function loadMcp() {
+  MC.dir = $('#mprojsel').value || '';
+  MC.data = await api('/api/mcp?dir=' + encodeURIComponent(MC.dir));
+  renderMcp();
+}
+const MCP_SCOPE_NOTE = {
+  user: 'Loads in every project.',
+  project: 'Shared with anyone who clones the repo. Needs approval per project before it starts.',
+  local: 'This project, this machine. Never shared.',
+};
+function renderMcp() {
+  const j = MC.data;
+  if (!j) return;
+  const warn = j.claudeJsonBroken
+    ? '<div class="card"><div class="bd"><b style="color:var(--deny)">~/.claude.json is not valid JSON.</b> User and Local servers cannot be read or written until that is fixed - Maestro will not overwrite a file it could not parse.</div></div>'
+    : '';
+  const cards = j.scopes.map((sc) => {
+    const rows = sc.servers.length ? sc.servers.map((s) => {
+      const appr = s.approval ? `
+        <select class="mcp-appr" data-name="${esc(s.name)}" aria-label="Approval for ${esc(s.name)}" title="Whether Claude Code may start this server in this project">
+          <option value="pending"${s.approval === 'pending' ? ' selected' : ''}>not decided</option>
+          <option value="enabled"${s.approval === 'enabled' ? ' selected' : ''}>approved</option>
+          <option value="disabled"${s.approval === 'disabled' ? ' selected' : ''}>blocked</option>
+        </select>` : '';
+      return `
+        <div class="mcp-row">
+          <div class="mcp-main">
+            <span class="mcp-name">${esc(s.name)}</span>
+            <span class="badge">${esc(s.kind)}</span>
+            ${s.envKeys.length ? `<span class="badge" title="Values are not shown here - edit the file directly to see them">env: ${esc(s.envKeys.join(', '))}</span>` : ''}
+            ${s.approval === 'pending' ? '<span class="badge" style="color:var(--brass);border-color:var(--brass)" title="Configured but not yet approved, so Claude Code will not start it">not started</span>' : ''}
+          </div>
+          <div class="mcp-detail">${esc(s.detail) || '<span style="color:var(--faint)">no command or url recorded</span>'}</div>
+          <div class="mcp-acts">${appr}
+            <button class="btn sm danger" data-mcp-del="${esc(s.name)}" data-scope="${esc(sc.scope)}">Remove</button>
+          </div>
+        </div>`;
+    }).join('') : `<div class="empty">No ${esc(sc.scope)} MCP servers.</div>`;
+    return `
+      <div class="card">
+        <h3>${esc(sc.scope)} <span class="badge" style="font-weight:400">${sc.servers.length}</span>
+          <span style="margin-left:auto;font:11px var(--mono);color:var(--faint)">${esc(sc.file)}</span></h3>
+        <div class="bd">
+          <p class="scope-note" style="margin:0 0 10px">${esc(MCP_SCOPE_NOTE[sc.scope] || '')}${
+            sc.broken ? ' <b style="color:var(--deny)">This file is not valid JSON.</b>' : ''}</p>
+          ${rows}
+        </div>
+      </div>`;
+  }).join('');
+  const pick = j.dir ? '' : '<div class="scope-note">Choose a project above to see its <code>.mcp.json</code> and local servers.</div>';
+  $('#mcplist').innerHTML = warn + cards + pick;
+}
+// stdio takes a command, http/sse take a url; showing both at once invites
+// filling in the one that will be ignored.
+function mcpKindChanged() {
+  const stdio = $('#mcp-kind').value === 'stdio';
+  $('#mcp-stdio-fields').classList.toggle('hidden', !stdio);
+  $('#mcp-url').classList.toggle('hidden', stdio);
+}
+$('#mcp-kind').addEventListener('change', mcpKindChanged);
+$('#mprojsel').addEventListener('change', () => loadMcp().catch((e) => toast(e.message, 'err')));
+$('#mcp-reload').addEventListener('click', () => loadMcp().then(() => toast('Reloaded from disk')).catch((e) => toast(e.message, 'err')));
+$('#mcp-add').addEventListener('click', async () => {
+  const scope = $('#mcp-scope').value;
+  const name = $('#mcp-name').value.trim();
+  const kind = $('#mcp-kind').value;
+  if (!name) return toast('Give the server a name', 'err');
+  if (scope !== 'user' && !MC.dir) return toast('Choose a project first - that scope is per project', 'err');
+  const config = {};
+  if (kind === 'stdio') {
+    config.command = $('#mcp-cmd').value.trim();
+    // Space-separated is what people paste out of a README. Quoted arguments
+    // are rare enough here that a wrong split is better met by editing the
+    // file than by half a shell parser living in the page.
+    const args = $('#mcp-args').value.trim();
+    if (args) config.args = args.split(/\s+/);
+  } else {
+    config.type = kind;
+    config.url = $('#mcp-url').value.trim();
+  }
+  const env = $('#mcp-env').value.trim();
+  if (env) {
+    config.env = {};
+    for (const pair of env.split(/\s+/)) {
+      const at = pair.indexOf('=');
+      if (at < 1) return toast(`env must be KEY=value - could not read "${pair}"`, 'err');
+      config.env[pair.slice(0, at)] = pair.slice(at + 1);
+    }
+  }
+  try {
+    const j = await api('/api/mcp', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope, dir: MC.dir, name, config }) });
+    toast(`${name} saved - restart Claude Code to pick it up`, '', j.file);
+    $('#mcp-name').value = ''; $('#mcp-cmd').value = ''; $('#mcp-args').value = '';
+    $('#mcp-url').value = ''; $('#mcp-env').value = '';
+    await loadMcp();
+  } catch (err) { toast(err.message, 'err'); }
+});
+$('#mcplist').addEventListener('click', async (e) => {
+  const del = e.target.closest('[data-mcp-del]');
+  if (!del) return;
+  const name = del.dataset.mcpDel;
+  if (!confirm(`Remove the MCP server "${name}" from ${del.dataset.scope} scope?`)) return;
+  try {
+    await api('/api/mcp', { method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: del.dataset.scope, dir: MC.dir, name }) });
+    toast(`${name} removed`);
+    await loadMcp();
+  } catch (err) { toast(err.message, 'err'); }
+});
+$('#mcplist').addEventListener('change', async (e) => {
+  const sel = e.target.closest('.mcp-appr');
+  if (!sel) return;
+  try {
+    await api('/api/mcp-approval', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir: MC.dir, name: sel.dataset.name, approval: sel.value }) });
+    toast(`${sel.dataset.name}: ${sel.value === 'enabled' ? 'approved' : sel.value === 'disabled' ? 'blocked' : 'left undecided'}`);
+    await loadMcp();
+  } catch (err) { toast(err.message, 'err'); }
+});
+
 /* ------------------------------------------------------------ nav + boot */
-const VIEWS = ['sessions', 'settings', 'guard', 'lib', 'files', 'effective'];
+const VIEWS = ['sessions', 'settings', 'guard', 'lib', 'mcp', 'files', 'effective'];
 const NAV_BTNS = [...document.querySelectorAll('nav button')];
 let CURRENT_VIEW = 'sessions';
 function showView(name) {
@@ -1744,7 +2289,7 @@ function showView(name) {
   CURRENT_VIEW = name;
   if (location.hash.slice(1) !== name) location.hash = name;
   LS.set('view', name);
-  const loaders = { effective: loadEffective, guard: loadGuard, lib: loadLib, files: loadFiles };
+  const loaders = { effective: loadEffective, guard: loadGuard, lib: loadLib, files: loadFiles, mcp: loadMcp };
   if (loaders[name]) Promise.resolve(loaders[name]()).catch((err) => toast(err.message, 'err'));
 }
 // Hash first so Back/Forward and a refresh both land on the same tab; the

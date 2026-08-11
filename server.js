@@ -34,7 +34,8 @@ const { log, send } = require('./lib/util');
 const { guardRequest } = require('./lib/http-guard');
 const { routes } = require('./lib/routes');
 const { pruneDigests } = require('./lib/digests');
-const { touch, orphanedFor, everConnected } = require('./lib/presence');
+const { touch, orphanedFor, everConnected, pingClients, graceKind, broadcast } = require('./lib/presence');
+const { watchProjects } = require('./lib/sessions');
 
 // A config tool must not die on a background error and leave the UI unreachable.
 process.on('uncaughtException', (e) => log('UNCAUGHT', e && e.stack || e));
@@ -67,6 +68,13 @@ const server = http.createServer(async (req, res) => {
 
 pruneDigests();
 
+// The session list was a snapshot of whenever it was last fetched, so a session
+// running in the terminal Maestro had just opened did not appear until someone
+// pressed Rescan. The presence stream is already open for every window, so the
+// nudge rides down that rather than costing a poll. Rate-limited in
+// watchProjects: acting on it means a rescan.
+watchProjects(() => broadcast('sessions'));
+
 // Closing the window is the only stop gesture most people make, and X used not
 // to reach us at all: the server outlived its own UI, held the port, and went on
 // serving an install root that had since moved. The page holds an event stream
@@ -78,16 +86,32 @@ pruneDigests();
 // would be a worse surprise than a stray process. Same signal the UI uses to
 // decide whether to offer the Quit button.
 if (process.env.MAESTRO_NO_OPEN) {
-  const ORPHAN_MS = 10_000;     // a refresh reconnects in a fraction of this
+  // One grace period for both "you closed the window" and "the stream broke"
+  // was the bug: at 10s, a suspend/resume or a reconnect timer throttled while
+  // Maestro's window sat behind the terminal it had just launched was enough to
+  // quit out from under a page that was still on screen, which the user met as
+  // a permanent "lost contact" banner minutes after opening it. The page now
+  // says goodbye on pagehide, so the two cases are told apart instead of split
+  // the difference - X still frees the port promptly, a blip no longer counts
+  // as a close. See lib/presence.js.
+  const CLOSED_MS = 12_000;     // a refresh reconnects in a fraction of this
+  const LOST_MS = 120_000;      // outlives a throttled reconnect and a suspend
   const STARTUP_MS = 120_000;   // a cold browser, first launch, busy machine
   const watch = setInterval(() => {
+    // A socket killed without a FIN - suspend, browser killed - stays readable
+    // forever and would read as a window that is still open. Waiting longer is
+    // only honest if that is discovered rather than trusted.
+    pingClients();
     const orphaned = orphanedFor();
     if (!orphaned) return;
     // Until the first window ever connects the clock is the boot clock, and a
-    // launcher can take a while to get a browser on screen. After that, a
-    // closed window is a closed window.
-    if (orphaned < (everConnected() ? ORPHAN_MS : STARTUP_MS)) return;
-    log('no UI connected for ' + Math.round(orphaned / 1000) + 's - exiting');
+    // launcher can take a while to get a browser on screen.
+    const grace = !everConnected() ? STARTUP_MS
+      : graceKind() === 'closed' ? CLOSED_MS
+      : LOST_MS;
+    if (orphaned < grace) return;
+    log('no UI connected for ' + Math.round(orphaned / 1000) + 's (' +
+        (everConnected() ? graceKind() : 'never connected') + ') - exiting');
     process.exit(0);
   }, 5000);
   watch.unref();

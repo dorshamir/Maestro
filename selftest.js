@@ -304,6 +304,56 @@ group('token counting (transcript dedup)');
   } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
 }
 
+/* --------------------------------------------------- spend by calendar day */
+group('spend attribution (byDay)');
+{
+  const { computeDigest } = require('./lib/digests');
+  const { priceUsage, pricing } = require('./lib/pricing');
+
+  // The 7/30-day windows used to attribute a session's WHOLE cost to the file's
+  // mtime, so a session opened weeks ago and touched today dropped all of its
+  // spend into "last 7 days". Buckets are per local calendar day, which is why
+  // these timestamps carry an offset: the day is the user's, not UTC's.
+  const tmp = path.join(os.tmpdir(), 'maestro-selftest-day-' + process.pid + '.jsonl');
+  const usage = (n) => ({ input_tokens: n, output_tokens: n, cache_read_input_tokens: 0 });
+  const at = (ts, id, n) => JSON.stringify({
+    type: 'assistant', requestId: id, timestamp: ts,
+    message: { id, model: 'claude-opus-5', usage: usage(n), content: [{ type: 'text' }] },
+  });
+  const local = (day, hour) => {
+    // Build an ISO string that lands on `day` in *this* machine's zone, so the
+    // assertion does not flip depending on where the suite runs.
+    const d = new Date(`${day}T${hour}:00:00`);
+    return d.toISOString();
+  };
+  fs.writeFileSync(tmp, [
+    at(local('2026-03-01', '10'), 'a1', 100),
+    at(local('2026-03-01', '11'), 'a2', 100),   // same day, must add up
+    at(local('2026-03-05', '09'), 'b1', 300),
+    // split across content blocks: the dedup must hold inside a day too
+    at(local('2026-03-05', '09'), 'b1', 300),
+  ].join('\n') + '\n');
+
+  try {
+    const d = computeDigest(tmp);
+    const days = Object.keys(d.byDay || {}).sort();
+    check('one bucket per calendar day', days.length === 2, 'days=' + JSON.stringify(days));
+    check('buckets carry the right dates',
+      days[0] === '2026-03-01' && days[1] === '2026-03-05', JSON.stringify(days));
+    const m1 = (d.byDay['2026-03-01'] || {}).models || {};
+    const m5 = (d.byDay['2026-03-05'] || {}).models || {};
+    check('same-day responses accumulate',
+      (m1['claude-opus-5'] || {}).in === 200, 'in=' + JSON.stringify(m1));
+    check('a repeated response is not double-counted in its day',
+      (m5['claude-opus-5'] || {}).in === 300, 'in=' + JSON.stringify(m5));
+    const dayTotal = Object.values(d.byDay)
+      .reduce((a, x) => a + priceUsage(x.models, pricing()), 0);
+    const sessionTotal = priceUsage(d.byModel, pricing());
+    check('days sum to the session total',
+      Math.abs(dayTotal - sessionTotal) < 1e-9, `days=${dayTotal} session=${sessionTotal}`);
+  } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
+}
+
 /* ------------------------------------------------------------ guardrails */
 group('guardrail hook (executed for real)');
 {

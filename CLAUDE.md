@@ -31,19 +31,47 @@ inside Maestro" in README.md — that boundary is deliberate and keeps the insta
   adding a key here; nothing else registers routes.
 - **`lib/presence.js` is how a closed window stops the server.** The page holds a
   `GET /api/presence` event stream open for as long as it is on screen; `server.js` exits once
-  the last one has been gone ~10s (2min before the first one ever arrives). Armed only under
-  `MAESTRO_NO_OPEN`, the same launcher signal that reveals the Quit button — from a terminal,
-  Ctrl+C is the way out. Any request also counts as presence, so a launcher's health check
-  cannot lose the race against the page it is about to open.
-- **`public/index.html` is the entire frontend** — one ~100 KB file, inline `<script>`, no build
+  the last one has been gone for its grace period (2min before the first one ever arrives).
+  Armed only under `MAESTRO_NO_OPEN`, the same launcher signal that reveals the Quit button —
+  from a terminal, Ctrl+C is the way out. Any request also counts as presence, so a launcher's
+  health check cannot lose the race against the page it is about to open.
+  **There are two grace periods, and collapsing them back into one is the bug to avoid**: 12s
+  after the page said goodbye (`POST /api/bye` from `pagehide`, so closing frees the port
+  promptly), 2min when the stream merely dropped — a suspend, or a reconnect timer throttled
+  while Maestro's window sat behind the terminal it launched. At a single 10s period the server
+  quit under pages that were still open. The goodbye only picks the shorter wait; a refresh
+  fires `pagehide` too and is taken back by the reconnect. `pingClients()` writes a keep-alive
+  comment down each stream from the timer in `server.js` (never from `lib/`), because a socket
+  killed without a FIN stays readable forever and would read as an open window.
+  The stream also carries a `sessions` event when `watchProjects()` sees a transcript change, so
+  the list stops being a snapshot — rate-limited by a settle delay *and* a floor between
+  notifications, because acting on one costs a rescan. The watcher is started from `server.js`
+  like everything else that runs, and uses `setTimeout` (the `setInterval` ban on `lib/` stands).
+- **`public/index.html` is the entire frontend** — one ~130 KB file, inline `<script>`, no build
   step, no framework. Per-view state lives in plain objects near each view's code: `S` (sessions +
-  settings), `G` (guardrails), `L` (library), `F` (files). Views are shown/hidden by `showView()`.
+  settings), `G` (guardrails), `L` (library), `F` (files), `MC` (mcp). Views are shown/hidden by
+  `showView()`; adding one means adding it to `VIEWS`, to the nav, and to `loaders`.
 
 Data flow for the main feature: `sessions.js` walks `~/.claude/projects/<encoded-path>/<id>.jsonl`,
 takes the real working directory from the `cwd` field *inside* each transcript (the encoded folder
 name is ambiguous), and rolls up cost via `pricing.js`. `digests.js` derives the per-session "what
 happened" line and caches it by `(mtime, size)` in `~/.claude/.maestro-digests.json`. `launch.js`
 builds the `claude --resume <id>` argv and opens a terminal in the original folder.
+
+- **Spend windows come from `digests.js`'s `byDay`, never from file mtime.** Attributing a
+  session's whole cost to when its file was last written put a month-old session's entire spend
+  inside "last 7 days". Days are local calendar days; `sessions.js` sums the buckets and falls back
+  to mtime only for a digest written before `byDay` existed. There is deliberately no all-time
+  total in the UI — it only grows, so it cannot answer whether this week cost more than last.
+- **`lib/mcp.js` writes inside `~/.claude.json`,** which is Claude Code's own state file. Every
+  write is read-modify-write of the `mcpServers` subtree with a backup first, and a file that will
+  not parse is **refused, never replaced** — rewriting it would cost the user everything else in
+  it. A `.mcp.json` server is "configured" but does not start until approved per project
+  (`enabledMcpjsonServers`/`disabledMcpjsonServers`), which is why the UI shows approval state.
+- **`searchTranscripts()` greps every transcript inside a request,** so it is bounded on every
+  axis: a file-size skip, a per-session and overall match cap, and a deadline. One lowercase
+  `includes()` over the whole file decides whether to parse it at all. Tool *results* are
+  deliberately not searched — they are file contents, and any common word matches megabytes.
 
 State Maestro writes outside the repo, all under `~/.claude/`: `.maestro-digests.json` (cache),
 `.maestro-overrides.json` (pins, custom names, archived flags), `.maestro.log`, and

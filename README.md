@@ -3,7 +3,11 @@
 A local control panel for Claude Code. One small web UI, two jobs:
 
 1. **Sessions** - every past Claude Code session on your machine, grouped by the *real* project folder it ran in. One click opens a terminal **in that folder** and runs `claude --resume <session-id>`. No more hunting for "which directory was that session in?"
-2. **Settings** - edit `settings.json` at all three scopes (User `~/.claude/settings.json`, Project `.claude/settings.json`, Local `.claude/settings.local.json`) with structured editors for **permissions (allow / ask / deny)**, **hooks**, and **env vars**, plus a raw JSON tab for everything else. An **Effective config** view shows the merged result with per-key provenance (which scope each value came from).
+2. **Settings** - edit `settings.json` at all three scopes (User `~/.claude/settings.json`, Project `.claude/settings.json`, Local `.claude/settings.local.json`) with structured editors for **permissions (allow / ask / deny)**, **hooks**, and **env vars**, plus a raw JSON tab for everything else. An **Effective config** view shows the merged result with per-key provenance: not just which scope each value came from, but **what it beat** - the key people arrive at that view for is the one they set in User and cannot see taking effect, and naming the scope that won without naming the one being ignored leaves them still hunting. Keys that merge rather than overwrite (`env`, `hooks`, the permission lists) are not reported as overridden, because nothing there is shadowed.
+
+Around those two: **search inside transcripts**, an **MCP server** manager, a **Library** for
+commands / skills / agents, **Guardrails** that hard-block files and commands whatever the
+permission mode, and a narrow file explorer over `~/.claude`.
 
 Zero npm dependencies. Binds to `127.0.0.1` only. Nothing leaves your machine.
 
@@ -52,7 +56,23 @@ been gone for its grace period. A socket rather than a goodbye message, because 
 window also dies by Alt+F4, by Task Manager, and by Windows restarting for updates
 - and because timers in a minimised window get throttled. A refresh reconnects far
 inside the grace period, and a second window is simply a second stream. A server
-whose browser never appears at all gives up after two minutes. This is the fix for
+whose browser never appears at all gives up after two minutes.
+
+**A dropped stream is not the same as a closed window**, and treating them alike
+was a bug: at ten seconds, a suspend/resume or a reconnect timer throttled while
+Maestro sat behind the terminal it had just launched was enough for the server to
+quit under a page that was still open, which you met as a permanent *lost contact
+with the Maestro server* banner minutes after opening it. So the page now also
+says goodbye on `pagehide`, the last event a closing window reliably fires. That
+goodbye only chooses which grace period applies - **twelve seconds when the window
+said it was leaving, two minutes when the stream merely broke** - and never exits
+anything by itself, so a refresh (which fires `pagehide` too) is taken back by the
+reconnect a moment later. Closing still frees the port promptly; a blink no longer
+counts as a close, and a browser killed outright still releases the port, just on
+the longer clock. Meanwhile the server writes a keep-alive comment down each
+stream every few seconds, because a socket killed without a FIN - suspend, a
+`kill -9`'d browser - stays readable forever and would otherwise read as a window
+that is still open. This whole mechanism is the fix for
 a real failure: two servers were found still holding ports 4144 and 4188 hours
 after the folder they were launched from had been moved, each serving `ENOENT ...
 public\index.html` to a launcher that had health-checked the port and concluded
@@ -114,12 +134,14 @@ them directly instead of evaluating the server):
 | `lib/sessions.js` | the `~/.claude/projects` scan and its cost roll-up |
 | `lib/digests.js` | per-transcript "what happened" summaries, cached |
 | `lib/pricing.js` | model rate table and cost arithmetic |
-| `lib/transcripts.js` | the viewer feed, export capsules, import |
+| `lib/transcripts.js` | the viewer feed, transcript search, export capsules, import |
 | `lib/launch.js` | building the `claude` command line, opening a terminal |
 | `lib/settings.js` | `settings.json` across scopes, plus the effective merge |
 | `lib/guardrails.js` | the generated PreToolUse hook and its deny-rule mirror |
 | `lib/library.js` | commands / agents / skills as files |
 | `lib/files.js` | the narrow file explorer over `~/.claude` |
+| `lib/mcp.js` | MCP servers across `~/.claude.json` and `.mcp.json` |
+| `lib/presence.js` | who still has the UI open, and the push channel to them |
 
 Routing is an exact-match lookup in a plain object - no pattern matching, no
 middleware stack. `server.js` awaits the handler inside one `try`/`catch`, so a
@@ -129,8 +151,50 @@ throw anywhere below becomes a 500 with the message rather than a hung request.
 
 - "New session here" button per project folder.
 - One-click **safety pack**: adds common deny rules (`rm -rf`, `git push --force`, `.env` / secrets reads).
-- Hook builder covers `command` hooks for all lifecycle events; other hook types (`http`, `prompt`, `agent`) via the Raw JSON tab.
+- Hook builder covers `command` and `http` hooks for all lifecycle events, with **edit in place**
+  rather than remove-and-retype. It names what each event is for, hides the matcher box on the
+  events that have nothing to match against (a matcher on `Stop` parses fine and silently narrows
+  nothing), and counts the hooks in *other* scopes that also fire - hooks concatenate rather than
+  override, so an empty-looking card is not the same as "nothing runs here".
 - `$schema` button adds the official JSON schema line so VS Code validates the file too.
+- **The session list updates itself.** A transcript changing pushes a `sessions` event down the
+  presence stream the page already holds open, so a session started in the terminal Maestro just
+  opened appears without pressing Rescan. Held back while the window is hidden or a transcript is
+  on screen, and rate-limited hard, because acting on it costs a rescan.
+
+## Searching inside sessions
+
+The filter box matches metadata - opening prompt, digest, files touched, folder, branch, id. It
+cannot answer *"where did I work out the retry logic three weeks ago"*, which is the question a
+pile of sessions actually raises. **Search inside** (or Enter in the filter box) greps the
+conversations themselves and shows the matching lines with the term marked, grouped by session;
+clicking one opens that transcript.
+
+It runs inside a request, over every transcript on the machine, so it is bounded on every axis: a
+file-size skip, a cap per session and overall, and a deadline - and it says `partial` rather than
+implying it found everything. One lowercase substring test over the whole file decides whether it
+is worth parsing at all, which is what keeps a search in the low hundreds of milliseconds. Tool
+*results* are not searched: they are file contents and command output, where any common word
+matches megabytes and buries the two lines where the thing was actually discussed.
+
+## MCP servers
+
+A tab for the three places Claude Code reads MCP servers from, which are otherwise only reachable
+as raw JSON: **user** (`~/.claude.json`, every project), **project** (the repo's `.mcp.json`,
+shared with anyone who clones it) and **local** (this project, this machine). Add, replace and
+remove servers over stdio or http/sse.
+
+Being in `.mcp.json` is not the same as running: Claude Code will not start a project server until
+it has been approved, and records that per project. Each row shows that state - approved, blocked,
+or **not started** - and lets you change it, because "configured" and "will actually start" are
+different questions and the file alone answers only one.
+
+Two of those scopes live inside `~/.claude.json`, which is Claude Code's own state file and holds
+far more than MCP config. Every write reads the whole document, changes only the `mcpServers`
+subtree, and keeps a `.maestro-bak.*` copy first - and a file that will not parse is **refused,
+never replaced**, because rewriting it would cost you everything else in it. Adding a server
+arranges for a command to run the next time Claude Code starts, which is the same weight of change
+as writing a hook, and is exactly what the request guard below exists to stop a web page doing.
 
 ## Security notes
 
@@ -276,7 +340,19 @@ Hovering the name shows the derived activity for that session (files edited, com
 
 ## Usage and cost
 
-A collapsible **Usage** panel sits above the session list: total estimated cost, the last 7 and 30 days, tokens in→out, cache read volume, a per-model cost breakdown, and the folders you spend the most in. Previously the totals existed only as a single number in the header and nothing was summarised anywhere.
+A collapsible **Usage** panel sits above the session list: the last 7 and 30 days, session counts for each, tokens in→out, cache read volume, a 30-day bar chart, a per-model cost breakdown, and the folders you spend the most in. There is deliberately **no all-time total** - it only ever grows, so it says nothing about whether this week cost more than the last one, which is the question the panel exists to answer.
+
+### The 7- and 30-day windows used to be wrong too
+
+They were built from each transcript's **modification time**, which meant a session's *entire*
+cost landed in whichever window the file was last touched in. Open a session you started three
+weeks ago, type one thing, and all three weeks of its spend moved into "last 7 days" - overstating
+exactly the number the panel exists to report.
+
+Spend is now bucketed by the local calendar day each API response actually landed on, derived
+while the digest is computed and cached with it, so the windows are sums of real days and the bar
+chart is the same data drawn out. A day with no sessions is drawn as a hairline rather than a very
+short bar, so "nothing happened" cannot be misread as "a little happened".
 
 ### The token column used to be wrong
 

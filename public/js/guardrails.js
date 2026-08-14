@@ -80,6 +80,37 @@ $('#gtest-cmd-btn').addEventListener('click', () => runGuardTest('command', '#gt
 $('#gtest-file').addEventListener('keydown', (e) => { if (e.key === 'Enter') runGuardTest('file', '#gtest-file', '#gtest-file-btn'); });
 $('#gtest-cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') runGuardTest('command', '#gtest-cmd', '#gtest-cmd-btn'); });
 
+$('#gnm-scan').addEventListener('click', async () => {
+  const btn = $('#gnm-scan');
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  $('#gnm-results').innerHTML = '';
+  try {
+    const j = await api('/api/guard-near-miss?dir=' + encodeURIComponent(G.scope === 'user' ? '' : G.dir));
+    if (!j.results.length) {
+      $('#gnm-results').innerHTML = `<div class="scope-note" style="margin:0">No close calls found across ${j.scanned} session(s)${j.partial ? ' (stopped early - there may be more)' : ''}.</div>`;
+    } else {
+      $('#gnm-results').innerHTML = j.results.map((r, i) => `
+        <div class="hook" style="align-items:center">
+          <div class="body"><b style="font:600 12px var(--mono)">${esc(r.suggest)}</b>
+            <div class="m">${esc(r.label)} - ${r.kind === 'command' ? 'ran' : 'read'} as <code>${esc(r.seen)}</code> in session ${esc(r.sessionId.slice(0, 8))}</div></div>
+          <button class="btn sm amber" data-gnm-add="${i}">Add rule</button>
+        </div>`).join('') + (j.partial ? '<div class="scope-note" style="margin:8px 0 0">Stopped early - there may be more.</div>' : '');
+      $('#gnm-results').dataset.results = JSON.stringify(j.results);
+    }
+  } catch (err) { toast(err.message, 'err'); }
+  finally { btn.disabled = false; btn.textContent = 'Scan history'; }
+});
+$('#gnm-results').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-gnm-add]'); if (!b) return;
+  const results = JSON.parse($('#gnm-results').dataset.results || '[]');
+  const r = results[Number(b.dataset.gnmAdd)]; if (!r) return;
+  const list = r.kind === 'command' ? G.commands : G.files;
+  if (!list.includes(r.suggest)) list.push(r.suggest);
+  renderGuard();
+  b.disabled = true; b.textContent = 'Added';
+  toast('Added - press Apply guardrails to make it real');
+});
+
 $('#gapply').addEventListener('click', async () => {
   try {
     const j = await api('/api/guard', { method: 'PUT', headers: { 'Content-Type': 'application/json' },

@@ -582,6 +582,55 @@ group('guardrail rule tester (against a draft config, not the saved one)');
   }
 }
 
+/* --------------------------------------------------- near-miss synthesis */
+group('near-miss guardrail synthesis (scanning transcript history)');
+{
+  const { scanTranscriptForRisks } = require('./lib/guardrail-analysis');
+
+  const tmp = path.join(os.tmpdir(), 'maestro-selftest-nearmiss-' + process.pid + '.jsonl');
+  const toolUse = (name, input, ts) => JSON.stringify({
+    type: 'assistant', timestamp: ts,
+    message: { content: [{ type: 'tool_use', name, input }] },
+  });
+  fs.writeFileSync(tmp, [
+    toolUse('Bash', { command: 'cd /repo && rm -rf node_modules' }, '2026-03-01T10:00:00Z'),
+    toolUse('Bash', { command: 'git push --force origin main' }, '2026-03-01T10:05:00Z'),
+    toolUse('Bash', { command: 'ls -la' }, '2026-03-01T10:06:00Z'), // harmless - must not appear
+    toolUse('Read', { file_path: '/repo/.env' }, '2026-03-01T10:07:00Z'),
+    toolUse('Read', { file_path: '/repo/src/app.js' }, '2026-03-01T10:08:00Z'), // harmless - must not appear
+    // isMeta lines and non-assistant/no-content-array lines must not throw.
+    JSON.stringify({ isMeta: true, type: 'assistant', message: { content: [] } }),
+    JSON.stringify({ type: 'user', message: { content: 'hi' } }),
+    'not even json',
+  ].join('\n') + '\n');
+
+  try {
+    const hits = scanTranscriptForRisks(tmp);
+    const cmds = hits.filter((h) => h.kind === 'command');
+    const files = hits.filter((h) => h.kind === 'file');
+    check('flags a recursive force delete', cmds.some((h) => h.seen === 'cd /repo && rm -rf node_modules'), JSON.stringify(hits));
+    check('flags a force push', cmds.some((h) => h.seen === 'git push --force origin main'), JSON.stringify(hits));
+    check('does not flag a harmless command', !cmds.some((h) => h.seen === 'ls -la'), JSON.stringify(hits));
+    check('flags a read of a guarded-looking file', files.some((h) => h.seen === '/repo/.env'), JSON.stringify(hits));
+    check('does not flag an ordinary file read', !files.some((h) => h.seen === '/repo/src/app.js'), JSON.stringify(hits));
+    check('every hit carries a label and a timestamp',
+      hits.every((h) => h.label && h.ts), JSON.stringify(hits));
+    // The proposed rule is a reusable token/pattern, not the whole observed
+    // command line - "rm -rf", not "cd /repo && rm -rf node_modules", or
+    // adding it as a guard rule would only ever match that one exact line
+    // again instead of the general danger it was flagged for.
+    const delHit = cmds.find((h) => h.seen.includes('node_modules'));
+    check('a command hit suggests a short reusable token, not the full line',
+      delHit && delHit.suggest === 'rm -rf' && delHit.suggest !== delHit.seen, JSON.stringify(delHit));
+    const envHit = files.find((h) => h.seen === '/repo/.env');
+    check('a file hit suggests a reusable pattern', envHit && envHit.suggest === '.env', JSON.stringify(envHit));
+    check('malformed/meta/user lines do not throw and produce no extra hits', hits.length === 3, JSON.stringify(hits));
+  } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
+
+  check('a missing file returns no hits rather than throwing',
+    Array.isArray(scanTranscriptForRisks(path.join(os.tmpdir(), 'maestro-does-not-exist.jsonl'))));
+}
+
 /* ------------------------------------------------------------------ mcp */
 group('mcp (isolated ~/.claude.json)');
 {

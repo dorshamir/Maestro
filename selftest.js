@@ -32,6 +32,7 @@ const { spawnSync } = require('child_process');
 const ROOT = __dirname;
 const SERVER = path.join(ROOT, 'server.js');
 const LIB = path.join(ROOT, 'lib');
+const PUBLIC_JS_DIR = path.join(ROOT, 'public', 'js');
 const PAGE = path.join(ROOT, 'public', 'index.html');
 
 let pass = 0, fail = 0;
@@ -45,33 +46,43 @@ const group = (t) => console.log('\n' + t);
 
 const libFiles = fs.readdirSync(LIB).filter((f) => f.endsWith('.js')).sort()
   .map((f) => path.join(LIB, f));
+// The frontend used to be one inline <script> in index.html; it is now these
+// files plus a boot script (see public/js/*.js and the <script src> tags at
+// the bottom of index.html). Load order matters at runtime but not for these
+// checks - every top-level const/function in a classic script is global
+// regardless of which file defines it.
+const frontendJS = fs.readdirSync(PUBLIC_JS_DIR).filter((f) => f.endsWith('.js')).sort()
+  .map((f) => path.join(PUBLIC_JS_DIR, f));
 const server = fs.readFileSync(SERVER, 'utf8');
 const page = fs.readFileSync(PAGE, 'utf8');
+// Element ids live in the page's markup only; references to them and the
+// /api/ calls that use them live wherever a view's script landed - so wiring
+// checks below read ids from `page` alone but refs/calls from `frontend`.
+const frontend = [page, ...frontendJS.map((f) => fs.readFileSync(f, 'utf8'))].join('\n');
 // Everything that ships as server-side code, for the whole-codebase greps.
 const allSource = [SERVER, ...libFiles].map((f) => fs.readFileSync(f, 'utf8')).join('\n');
 
 /* ------------------------------------------------------------ syntax */
 group('syntax');
-for (const file of [SERVER, ...libFiles, __filename]) {
+for (const file of [SERVER, ...libFiles, ...frontendJS, __filename]) {
   const r = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
   check(path.relative(ROOT, file).replace(/\\/g, '/') + ' parses', r.status === 0, r.stderr);
 }
 {
-  // The page's inline <script> must parse too - a syntax error there is a
-  // blank UI with one console message nobody sees.
-  const m = page.match(/<script>([\s\S]*)<\/script>/);
-  if (!m) bad('index.html has an inline script', 'no <script> block found');
-  else {
-    try { new Function(m[1]); ok('index.html inline script parses'); }
-    catch (e) { bad('index.html inline script parses', e.message); }
-  }
+  // The page itself must ship no inline script any more - the whole point of
+  // the split was to stop code piling up somewhere selftest.js can't see it
+  // split by file. A stray inline block would silently escape every check
+  // above and below that scans public/js/*.js instead of the page.
+  const m = page.match(/<script>[\s\S]*?<\/script>/);
+  check('index.html has no inline script (split into public/js/*.js)', !m,
+    m ? 'found one: ' + m[0].slice(0, 80) + '…' : '');
 }
 
 /* -------------------------------------------------------------- UI wiring */
 group('UI wiring');
 {
   const ids = new Set([...page.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
-  const refs = [...new Set([...page.matchAll(/\$\('#([A-Za-z0-9_-]+)'\)/g)].map((m) => m[1]))];
+  const refs = [...new Set([...frontend.matchAll(/\$\('#([A-Za-z0-9_-]+)'\)/g)].map((m) => m[1]))];
   const missing = refs.filter((r) => !ids.has(r));
   check(`every $('#id') resolves (${refs.length} refs)`, missing.length === 0,
     missing.length ? 'no element for: ' + missing.join(', ') : '');
@@ -99,7 +110,7 @@ group('route table');
   // The page is the only client. An endpoint it calls that no longer exists is
   // a 404 the user meets as a dead button.
   const served = new Set(keys.map((k) => k.split(' ')[1]));
-  const called = [...new Set([...page.matchAll(/\/api\/[a-z][a-z-]*/g)].map((m) => m[0]))];
+  const called = [...new Set([...frontend.matchAll(/\/api\/[a-z][a-z-]*/g)].map((m) => m[0]))];
   const dead = called.filter((p) => !served.has(p));
   check(`every endpoint the page calls exists (${called.length} paths)`, dead.length === 0,
     'no route for: ' + dead.join(', '));
@@ -127,6 +138,25 @@ group('route table');
   const icon = call('GET /assets/maestro.svg', '/assets/maestro.svg');
   check('GET /assets/maestro.svg serves the icon', icon.code === 200,
     `status ${icon.code} - assets must resolve from ROOT`);
+
+  const css = call('GET /styles.css', '/styles.css');
+  check('GET /styles.css resolves from ROOT', css.code === 200,
+    `status ${css.code} - split-out frontend files must resolve from ROOT too`);
+  const boot = call('GET /js/boot.js', '/js/boot.js');
+  check('GET /js/boot.js resolves from ROOT', boot.code === 200,
+    `status ${boot.code} - split-out frontend files must resolve from ROOT too`);
+
+  // Every public/js/*.js file on disk must have an exact-match route, and vice
+  // versa - a file left unrouted after a split is a silent 404 in the browser
+  // console, and a route pointing at a file that no longer exists 500s.
+  const routedJsFiles = keys.filter((k) => k.startsWith('GET /js/')).map((k) => k.slice('GET /js/'.length));
+  const onDiskJsFiles = frontendJS.map((f) => path.basename(f));
+  check('every public/js/*.js file has a route',
+    onDiskJsFiles.every((f) => routedJsFiles.includes(f)),
+    'unrouted: ' + onDiskJsFiles.filter((f) => !routedJsFiles.includes(f)).join(', '));
+  check('every GET /js/* route points at a file that exists',
+    routedJsFiles.every((f) => onDiskJsFiles.includes(f)),
+    'dangling: ' + routedJsFiles.filter((f) => !onDiskJsFiles.includes(f)).join(', '));
 }
 
 /* ------------------------------------------------------- server hygiene */
@@ -829,6 +859,48 @@ group('path containment');
   rejects('project scope stays in .claude', () => fileRel('project', process.cwd(), 'package.json'));
   check('ordinary user file allowed',
     typeof fileRel('user', '', 'settings.json') === 'string');
+}
+
+/* -------------------------------------------------------------- backups */
+group('backups (list + restore)');
+{
+  const { listBackups, restoreBackup, rotateBackups } = require('./lib/util');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-backup-'));
+  const file = path.join(dir, 'settings.json');
+  try {
+    check('no backups for a file that was never written', listBackups(file).length === 0);
+
+    fs.writeFileSync(file, 'v1');
+    rotateBackups(file); // backs up v1, file still reads v1 until the next write
+    fs.writeFileSync(file, 'v2');
+    rotateBackups(file); // backs up v2
+    fs.writeFileSync(file, 'v3');
+
+    const backups = listBackups(file);
+    check('lists one entry per rotateBackups call', backups.length === 2, 'got ' + backups.length);
+    check('newest first', backups[0].mtimeMs >= backups[1].mtimeMs, JSON.stringify(backups));
+
+    const v2backup = backups[0]; // most recent rotate captured v2
+    restoreBackup(file, v2backup.name);
+    check('restore overwrites the file with the backup content',
+      fs.readFileSync(file, 'utf8') === 'v2', 'got ' + fs.readFileSync(file, 'utf8'));
+
+    const afterRestore = listBackups(file);
+    check('restoring backs up the pre-restore content too (v3 not lost)',
+      afterRestore.some((b) => b.name !== v2backup.name), JSON.stringify(afterRestore));
+    const preRestoreBackup = afterRestore.find((b) => b.name !== v2backup.name);
+    check('the pre-restore backup actually holds v3',
+      fs.readFileSync(path.join(dir, preRestoreBackup.name), 'utf8') === 'v3');
+
+    let threw = null;
+    try { restoreBackup(file, '../../etc/passwd'); } catch (e) { threw = e; }
+    check('restoring an unlisted/traversal name is refused', !!threw, 'call was allowed through');
+
+    let threw2 = null;
+    try { restoreBackup(file, 'settings.json.maestro-bak.nonexistent'); } catch (e) { threw2 = e; }
+    check('restoring a name that looks right but was never listed is refused', !!threw2, 'call was allowed through');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 /* ---------------------------------------------------------------- report */

@@ -1,0 +1,328 @@
+/* ── Maestro design tokens ──────────────────────────────────────────────
+   Direction: a conductor's console at curtain-up. Slate surfaces, an
+   oxidized-copper accent (a brass instrument's patina, not a flat gold),
+   a verdigris/oxblood/mustard semantic set drawn from the same instrument
+   case, and a five-line staff watermark in the header as the signature.
+   Serif headings against monospace data; double-hairline "stave" rules as
+   the structural device. Dark by default (devs), full light theme via
+   prefers-color-scheme. Every colour pair below clears 4.5:1 on its
+   surface; interactive targets are >= 44px for primary actions.        */
+:root{
+  --ink:#111520; --panel:#181D2A; --panel-2:#1F2534; --line:#2C3446; --line-soft:#232A3A;
+  --text:#E6E9F0; --dim:#98A1B4; --faint:#6B7488;
+  --brass:#E08A3C; --brass-ink:#1B1305; --brass-soft:#3D2712;
+  --allow:#4FAE82; --ask:#E3B94E; --deny:#D8564E;
+  --sans:ui-sans-serif,system-ui,"Segoe UI",Inter,Roboto,sans-serif;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --mono:"JetBrains Mono","Cascadia Code",ui-monospace,Consolas,"SF Mono",Menlo,monospace;
+  --r:8px; --r-sm:5px;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+  --shadow:0 10px 30px rgba(0,0,0,.45);
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --ink:#E8E0C9; --panel:#FBF8F0; --panel-2:#F1E9D3; --line:#D3C39B; --line-soft:#E1D5AE;
+    --text:#2A2013; --dim:#6B5C3E; --faint:#96865F;
+    --brass:#A6551C; --brass-ink:#FFFBF2; --brass-soft:#EDD3AE;
+    --allow:#2F7A4F; --ask:#93701B; --deny:#9C3226;
+    --shadow:0 10px 30px rgba(60,45,15,.16);
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ink);color:var(--text);
+  font:16px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+::selection{background:var(--brass-soft);color:var(--text)}
+button{font:inherit;cursor:pointer;color:inherit}
+input,select,textarea{font:13px/1.5 var(--mono);background:var(--ink);color:var(--text);
+  border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 10px;min-height:38px;outline:none}
+input[type=checkbox]{min-height:0;width:17px;height:17px;accent-color:var(--brass);cursor:pointer}
+input::placeholder,textarea::placeholder{color:var(--faint)}
+:where(a,button,input,select,textarea,[tabindex]):focus-visible{
+  outline:2px solid var(--brass);outline-offset:2px;border-radius:var(--r-sm)}
+input:hover,select:hover,textarea:hover{border-color:var(--dim)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
+
+header{display:flex;align-items:center;gap:var(--sp-4);flex-wrap:wrap;
+  padding:var(--sp-4) var(--sp-5) var(--sp-3);background:var(--panel);
+  border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:11px;font:700 21px/1 var(--serif);letter-spacing:.2px}
+.brand svg{display:block;color:var(--brass);flex:none}
+.brand small{font:400 12px/1 var(--sans);color:var(--faint);letter-spacing:.4px}
+.annunciators{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-left:auto}
+.ann{border:1px solid var(--line);border-radius:var(--r-sm);padding:5px 12px;background:var(--ink);min-width:78px}
+.ann .k{font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint)}
+.ann .v{font:600 13px/1.4 var(--mono)}
+.ann.lit .v{color:var(--brass)} .ann.ok .v{color:var(--allow)} .ann.err .v{color:var(--deny)}
+.ann .sub{font:10px/1.3 var(--mono);color:var(--faint);margin-top:1px}
+
+/* ── usage summary ─────────────────────────────────────────────────── */
+#usage{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);
+  margin-bottom:var(--sp-4);overflow:hidden}
+#usage .u-head{display:flex;align-items:center;gap:var(--sp-4);flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);cursor:pointer;user-select:none}
+#usage .u-head:hover{background:var(--ink)}
+#usage .u-big{font:600 22px/1 var(--mono);color:var(--brass)}
+#usage .u-cap{font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint)}
+#usage .u-stat{display:flex;flex-direction:column;gap:3px}
+#usage .u-stat .n{font:600 13px/1 var(--mono);color:var(--text)}
+#usage .u-body{border-top:1px solid var(--line);padding:var(--sp-4);display:none}
+#usage.open .u-body{display:block}
+#usage .u-chev{margin-left:auto;color:var(--faint);font:11px var(--mono);transition:transform .15s}
+#usage.open .u-chev{transform:rotate(90deg)}
+.mbar{display:grid;grid-template-columns:minmax(120px,1fr) 3fr minmax(96px,auto);
+  gap:var(--sp-3);align-items:center;padding:5px 0;font:12px var(--mono)}
+.mbar .track{height:8px;border-radius:4px;background:var(--ink);overflow:hidden;border:1px solid var(--line)}
+.mbar .fill{height:100%;background:var(--brass);border-radius:4px}
+.mbar .amt{text-align:right;color:var(--text);font-weight:600}
+.mbar .name{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.u-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--sp-4);margin-top:var(--sp-4)}
+.u-grid h4{font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;
+  color:var(--faint);margin:0 0 var(--sp-2)}
+.u-row{display:flex;justify-content:space-between;gap:var(--sp-3);font:12px var(--mono);padding:3px 0}
+.u-row .l{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.u-row .r{color:var(--text);font-weight:600;white-space:nowrap}
+/* 30-day spend. Bars rather than a line: a day with no sessions is a real zero
+   worth seeing, and a line would draw straight through it. */
+.spark{display:flex;align-items:flex-end;gap:2px;height:54px;padding:0 1px;
+  border-bottom:1px solid var(--line)}
+.spark .sbar{flex:1;min-width:3px;background:var(--brass);opacity:.55;border-radius:2px 2px 0 0;
+  min-height:1px;transition:opacity .12s}
+.spark .sbar:hover{opacity:1}
+.spark .sbar.zero{background:var(--line);opacity:1}
+.spark .sbar.today{opacity:1;box-shadow:0 0 0 1px var(--brass)}
+.spark-ax{display:flex;justify-content:space-between;font:10px var(--mono);color:var(--faint);margin-top:4px}
+/* ── transcript search results ── */
+#searchres{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);
+  margin-bottom:var(--sp-4);overflow:hidden}
+#searchres .sr-head{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--line);font:12px var(--sans);color:var(--dim)}
+.sr-hit{padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--line)}
+.sr-hit:last-child{border-bottom:none}
+.sr-hit .sr-top{display:flex;gap:var(--sp-3);align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.sr-hit .sr-name{font:600 13px var(--sans);color:var(--text);cursor:pointer;text-align:left;
+  background:none;border:none;padding:0}
+.sr-hit .sr-name:hover{color:var(--brass);text-decoration:underline}
+.sr-hit .sr-where{font:11px var(--mono);color:var(--faint)}
+.sr-line{font:12px/1.5 var(--mono);color:var(--dim);padding:3px 0 3px 10px;
+  border-left:2px solid var(--line);margin:3px 0}
+.sr-line b{color:var(--brass);font-weight:600}
+/* ── mcp servers ── */
+.mcp-row{display:grid;grid-template-columns:1fr auto;gap:var(--sp-2) var(--sp-3);align-items:center;
+  padding:10px 0;border-bottom:1px solid var(--line)}
+.mcp-row:last-child{border-bottom:none}
+.mcp-main{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
+.mcp-name{font:600 13px var(--mono);color:var(--text)}
+.mcp-detail{grid-column:1/2;font:11px var(--mono);color:var(--dim);word-break:break-all}
+/* a key set in more than one scope: what the winner is beating */
+table.eff .beat{font:11px/1.6 var(--mono);color:var(--faint);margin-top:3px}
+table.eff .beat code{color:var(--dim)}
+.mcp-acts{grid-row:1/3;grid-column:2/3;display:flex;gap:var(--sp-2);align-items:center}
+.mcp-move-panel{grid-column:1/3;display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap;margin-top:var(--sp-2)}
+@media (max-width:620px){.mcp-row{grid-template-columns:1fr}.mcp-acts{grid-row:auto;grid-column:1/2}.mcp-move-panel{grid-column:1/2}}
+.sr-line .sr-role{color:var(--faint);text-transform:uppercase;font-size:9px;letter-spacing:1.1px;margin-right:6px}
+@media (max-width:620px){#usage .u-head{gap:var(--sp-3)}#usage .u-big{font-size:18px}}
+
+/* ── nav: brass baton under the active tab, over a double hairline ── */
+nav{display:flex;gap:2px;padding:0 var(--sp-5);background:var(--panel);
+  border-bottom:1px solid var(--line);box-shadow:inset 0 -3px 0 -2px var(--line-soft);
+  overflow-x:auto;scrollbar-width:none;
+  /* centred over the 1120px content column below. "safe" keeps the first tab
+     reachable instead of clipping it off-screen when the row has to scroll. */
+  justify-content:center;justify-content:safe center}
+nav::-webkit-scrollbar{display:none}
+nav button{background:none;border:0;border-bottom:3px solid transparent;color:var(--dim);
+  padding:0 var(--sp-4);min-height:44px;white-space:nowrap;
+  font:600 12px/1 var(--sans);letter-spacing:1.3px;text-transform:uppercase;transition:color .12s,border-color .12s}
+nav button:hover{color:var(--text)}
+nav button[aria-selected=true]{color:var(--text);border-bottom-color:var(--brass)}
+
+main{max-width:1120px;margin:0 auto;padding:var(--sp-5)}
+.hidden{display:none!important}
+
+/* ── generic surfaces ── */
+.toolbar{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin-bottom:var(--sp-4)}
+.toolbar input[type=search]{flex:1;min-width:220px}
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);margin-bottom:var(--sp-4);overflow:hidden}
+.card h3{margin:0;padding:11px var(--sp-4);background:var(--panel-2);
+  border-bottom:1px solid var(--line);box-shadow:inset 0 -3px 0 -2px var(--line-soft);
+  font:600 12px/1.4 var(--sans);letter-spacing:1.2px;text-transform:uppercase;color:var(--dim);
+  display:flex;align-items:center;gap:10px}
+.card .bd{padding:var(--sp-4)}
+.empty{color:var(--faint);text-align:center;padding:var(--sp-6) var(--sp-4);font:13px var(--mono)}
+.scope-note{font:12px/1.6 var(--sans);color:var(--dim);margin:var(--sp-2) 0 var(--sp-4)}
+.scope-note code{font:12px var(--mono);color:var(--text);background:var(--panel-2);padding:1px 5px;border-radius:3px}
+.spacer{margin-left:auto}
+
+/* ── buttons ── */
+.btn{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);color:var(--text);
+  padding:0 var(--sp-4);min-height:44px;white-space:nowrap;font:500 13px var(--sans);
+  display:inline-flex;align-items:center;gap:6px;transition:border-color .12s,background .12s}
+.btn:hover:not(:disabled){border-color:var(--dim)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.amber{background:var(--brass);border-color:var(--brass);color:var(--brass-ink);font-weight:650}
+.btn.amber:hover:not(:disabled){filter:brightness(1.07)}
+.btn.sm{min-height:34px;padding:0 11px;font-size:12.5px}
+.btn.ghost{background:none;color:var(--dim)}
+.btn.ghost:hover{color:var(--text)}
+.btn.danger{color:var(--deny);border-color:var(--deny)}
+.btn.danger:hover{background:color-mix(in srgb,var(--deny) 12%,transparent)}
+
+/* ── sessions ── */
+.proj{border:1px solid var(--line);border-radius:var(--r);margin-bottom:var(--sp-3);background:var(--panel);overflow:hidden}
+.proj.pinned{border-color:var(--brass)}
+.proj-head{display:flex;align-items:center;gap:var(--sp-3);padding:10px var(--sp-4);background:var(--panel-2);
+  border-bottom:1px solid var(--line);flex-wrap:wrap;cursor:pointer}
+.proj-head:hover{background:var(--ink)}
+/* Folders start closed, so the chevron is the one control that has to be
+   unmissable - the old "Show N more" ghost button sat at the *bottom* of an
+   already-expanded list and nobody found it. */
+.proj:not(.open) .proj-head{border-bottom:0}
+.proj-fold{background:none;border:0;color:var(--brass);font-size:12px;line-height:1;cursor:pointer;
+  padding:4px 2px;flex:none;transition:transform .12s ease}
+.proj.open .proj-fold{transform:rotate(90deg)}
+.proj-head .path{font:600 13px var(--mono);word-break:break-all}
+.proj-head .count{color:var(--faint);font:11px var(--mono)}
+.proj:not(.open) .proj-head .count.fold-hint{color:var(--brass)}
+.pin-toggle{background:none;border:0;color:var(--faint);font-size:16px;cursor:pointer;line-height:1;padding:2px 4px}
+.pin-toggle.on,.pin-toggle:hover{color:var(--brass)}
+.badge{font:600 10px var(--sans);letter-spacing:.8px;text-transform:uppercase;
+  padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.badge.gone{color:var(--deny);border-color:var(--deny)}
+/* Grid, not flex: colhead and each row are SEPARATE grid containers, so a
+   shared --row-grid template isn't optional - it's the only way their
+   column widths end up identical. Every one of the 10 columns is mirrored
+   in colhead (checkbox, Resume, prompt, name, tokens, then the 5 action
+   buttons) via hidden placeholders with the same text, so the flexible
+   "opening prompt" column absorbs the same leftover space in both and the
+   fixed-width columns after it land in the same place either way.        */
+:root{--row-grid:auto auto minmax(0,1fr) 296px 132px auto auto auto auto auto}
+.sess{display:grid;grid-template-columns:var(--row-grid);
+  gap:var(--sp-3);align-items:center;padding:9px var(--sp-4);border-bottom:1px solid var(--line-soft)}
+.sess:last-child{border-bottom:0}
+.sess.archived{opacity:.55}
+.sess:focus-visible{outline:2px solid var(--brass);outline-offset:-2px;background:var(--panel-2)}
+.sess:hover{background:var(--panel-2)}
+.sess .info{min-width:0}
+.sess .title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;line-height:1.35}
+.sess .meta{font:11px var(--mono);color:var(--faint);display:flex;gap:var(--sp-3);flex-wrap:wrap;margin-top:2px}
+.sess .about{min-width:0;font:11.5px/1.45 var(--mono);color:var(--dim);
+  border-left:1px solid var(--line-soft);padding-left:var(--sp-3)}
+.sess .about .gen{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden;color:var(--text);font:12px/1.4 var(--sans)}
+.sess .about .quiet{color:var(--faint)}
+.colhead{display:grid;grid-template-columns:var(--row-grid);
+  gap:var(--sp-3);align-items:center;padding:5px var(--sp-4);
+  background:var(--panel);border-bottom:1px solid var(--line-soft);
+  font:600 9px var(--sans);letter-spacing:1.2px;text-transform:uppercase;color:var(--faint)}
+.colhead .ph{visibility:hidden}
+.colhead .b{padding-left:var(--sp-3)}
+.colhead .c{padding-left:var(--sp-3)}
+.sess .spend{flex:0 0 132px;min-width:0;border-left:1px solid var(--line-soft);padding-left:var(--sp-3)}
+.sess .usd{font:600 13px var(--mono);color:var(--text)}
+.sess .usd.free{color:var(--faint);font-weight:400}
+.sess .tokline{font:10px var(--mono);color:var(--faint);margin-top:1px}
+.pick{flex:none}
+@media (max-width:1000px){
+  .sess{display:flex;flex-wrap:wrap}
+  .sess .info{flex:1;min-width:0}
+  .sess .about{flex:1 1 60%;border-left:0;border-top:1px dashed var(--line-soft);
+    padding:var(--sp-2) 0 0;margin-top:var(--sp-1)}
+  .sess .spend{flex:0 0 auto;margin-left:auto;border-left:0;border-top:1px dashed var(--line-soft);
+    padding:var(--sp-2) 0 0;margin-top:var(--sp-1);text-align:right}
+  .colhead{display:none}
+}
+
+/* ── scope rail ── */
+.scope-rail{display:flex}
+.scope-rail button{border:1px solid var(--line);background:var(--panel-2);color:var(--dim);
+  padding:0 var(--sp-4);min-height:40px;font:600 11px var(--sans);letter-spacing:.7px;text-transform:uppercase}
+.scope-rail button+button{border-left:0}
+.scope-rail button:first-child{border-radius:var(--r-sm) 0 0 var(--r-sm)}
+.scope-rail button:last-child{border-radius:0 var(--r-sm) var(--r-sm) 0}
+.scope-rail button[aria-pressed=true],.scope-rail button.on{background:var(--brass);border-color:var(--brass);color:var(--brass-ink)}
+.subtabs{display:flex;margin-left:auto}
+.subtabs button{background:none;border:1px solid var(--line);color:var(--dim);padding:0 var(--sp-4);
+  min-height:40px;font:600 11px var(--sans);letter-spacing:.7px}
+.subtabs button+button{border-left:0}
+.subtabs button:first-child{border-radius:var(--r-sm) 0 0 var(--r-sm)}
+.subtabs button:last-child{border-radius:0 var(--r-sm) var(--r-sm) 0}
+.subtabs button.on{color:var(--brass);border-color:var(--brass)}
+
+/* ── rules, hooks, key rows ── */
+.permcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--sp-4)}
+.permcol h4{margin:0 0 var(--sp-2);font:600 12px var(--mono)}
+.permcol.allow h4{color:var(--allow)} .permcol.ask h4{color:var(--ask)} .permcol.deny h4{color:var(--deny)}
+.rule{display:flex;align-items:center;gap:6px;font:12px var(--mono);border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:6px 9px;margin-bottom:6px;background:var(--ink);word-break:break-all}
+.rule button{border:0;background:none;color:var(--faint);padding:2px 4px;line-height:1}
+.rule button:hover{color:var(--deny)}
+.addrow{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--sp-3)}
+.addrow input{flex:1;min-width:170px}
+.kv{display:flex;gap:var(--sp-2);margin-bottom:var(--sp-2);align-items:center}
+.kv input{flex:1}
+.hook{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--ink);padding:10px;
+  margin-bottom:var(--sp-2);font:12px var(--mono);display:flex;gap:10px;align-items:flex-start}
+.hook .ev{color:var(--brass);font-weight:700;white-space:nowrap}
+.hook .body{flex:1;min-width:0;word-break:break-word}
+.hook .m{color:var(--dim)}
+.genrow{display:grid;grid-template-columns:200px 1fr;gap:var(--sp-3);align-items:center;margin-bottom:var(--sp-3)}
+.genrow label{font:12px var(--mono);color:var(--dim)}
+@media (max-width:720px){.genrow{grid-template-columns:1fr;gap:var(--sp-1)}}
+
+textarea.raw{width:100%;min-height:380px;resize:vertical;line-height:1.6;tab-size:2}
+.savebar{display:flex;gap:var(--sp-3);align-items:center;position:sticky;bottom:0;z-index:5;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r);
+  padding:10px var(--sp-4);flex-wrap:wrap;box-shadow:var(--shadow)}
+.savebar .file{font:11px var(--mono);color:var(--faint);word-break:break-all;flex:1;min-width:200px}
+
+/* ── provenance ── */
+.layerline{font:12px var(--mono);color:var(--dim);margin-bottom:var(--sp-1)}
+.chip{display:inline-block;font:700 9px var(--sans);letter-spacing:.8px;text-transform:uppercase;
+  padding:2px 7px;border-radius:99px;margin-right:6px;vertical-align:1px;border:1px solid transparent}
+.chip.user{background:var(--panel-2);color:var(--dim);border-color:var(--line)}
+.chip.project{background:color-mix(in srgb,var(--allow) 16%,transparent);color:var(--allow)}
+.chip.local{background:var(--brass-soft);color:var(--brass)}
+table.eff{width:100%;border-collapse:collapse;font:12px var(--mono)}
+table.eff td{border-bottom:1px solid var(--line-soft);padding:7px 9px;vertical-align:top;word-break:break-all}
+pre.json{font:12px/1.6 var(--mono);background:var(--ink);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:var(--sp-3);overflow:auto;max-height:420px;white-space:pre-wrap;word-break:break-word}
+
+/* ── transcript viewer ── */
+.tabstrip{display:flex;gap:2px;flex-wrap:wrap;margin-bottom:var(--sp-3)}
+.tabstrip button{border:1px solid var(--line);border-radius:var(--r-sm) var(--r-sm) 0 0;background:var(--panel-2);
+  color:var(--dim);padding:0 var(--sp-3);min-height:36px;font:12px var(--sans);max-width:230px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tabstrip button.on{color:var(--text);border-bottom-color:var(--brass);background:var(--panel)}
+.chat{display:flex;flex-direction:column;gap:var(--sp-3)}
+.chat .who{font:600 10px var(--sans);letter-spacing:1.1px;text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+.chat .tt{white-space:pre-wrap;word-break:break-word;font:13px/1.6 var(--sans)}
+.chat .user .tt{border-left:2px solid var(--brass);padding-left:var(--sp-3)}
+.chat .tool .tt,.chat .think .tt{font:12px/1.6 var(--mono);color:var(--dim)}
+.chat .sum .tt{font:italic 14px var(--serif);color:var(--dim)}
+.chat .side{opacity:.72}
+.chat .x{color:var(--deny)}
+
+/* ── file tree ── */
+.ftree{max-height:520px;overflow:auto}
+.frow{display:flex;gap:var(--sp-2);align-items:center;padding:5px var(--sp-2);border-radius:var(--r-sm);
+  font:12.5px var(--mono);cursor:pointer;min-height:32px}
+.frow:hover{background:var(--panel-2)}
+.frow.on{background:var(--brass-soft);color:var(--text)}
+.frow.isdir{color:var(--dim);cursor:pointer;font-weight:600}
+.frow.isdir .chev{display:inline-block;width:10px;color:var(--faint);transition:transform .12s}
+.frow.isdir.open .chev{transform:rotate(90deg)}
+.frow.isdir .fcount{margin-left:auto;color:var(--faint);font-size:11px;font-weight:400}
+.frow .fsize{margin-left:auto;color:var(--faint);font-size:11px}
+
+/* ── toasts (announced to screen readers) ── */
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:var(--sp-2);z-index:60;max-width:min(380px,90vw)}
+.toast{background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--brass);
+  border-radius:var(--r-sm);padding:11px var(--sp-4);font:13px/1.5 var(--sans);box-shadow:var(--shadow)}
+.toast.err{border-left-color:var(--deny)}
+.toast .cmd{font:12px var(--mono);color:var(--brass);word-break:break-all;margin-top:5px}
+
+/* ── fatal-error banner: never fail silently again ── */
+#crash{display:none;background:var(--deny);color:#fff;padding:10px var(--sp-5);font:13px var(--mono)}
+#crash.show{display:block}
+@media (max-width:760px){#lib-grid,#files-grid{grid-template-columns:1fr!important}main{padding:var(--sp-4)}}

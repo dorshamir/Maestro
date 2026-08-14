@@ -219,7 +219,7 @@ group('packaging');
 /* -------------------------------------------------------------- pricing */
 group('pricing');
 {
-  const { pricing, priceUsage, rateFor } = require('./lib/pricing');
+  const { pricing, priceUsage, rateFor, totalUsd } = require('./lib/pricing');
   const p = pricing();
 
   // Family-prefix matching is the whole reason this table is 5 lines instead
@@ -228,7 +228,14 @@ group('pricing');
     ['claude-opus-5', 5, 25],
     ['claude-opus-4-8', 5, 25],
     ['claude-opus-9-20991231', 5, 25],   // does not exist yet - must still price
-    ['claude-sonnet-5', 2, 10],
+    // claude-sonnet-5 is deliberately NOT in this table: its rate is time-boxed
+    // (see below) and calling rateFor() with the real wall clock here would
+    // make this test start failing the day the introductory rate lapses.
+    // Sonnet 5's $2/$10 is an introductory rate for that one model - every
+    // other Sonnet already bills at the $3/$15 family rate. A flat
+    // 'claude-sonnet' prefix once priced them all at Sonnet 5's rate.
+    ['claude-sonnet-4-6', 3, 15],
+    ['claude-sonnet-4-5-20250929', 3, 15],
     ['claude-haiku-4-5-20251001', 1, 5],
     ['claude-fable-5', 10, 50],
     ['claude-mythos-5', 10, 50],
@@ -242,6 +249,30 @@ group('pricing');
     'a non-Claude model must not silently inherit a Claude rate');
   check('fast mode costs more than standard',
     rateFor('claude-opus-5|fast', p).out > rateFor('claude-opus-5', p).out);
+
+  // The intro rate is time-boxed: past its `until` date, Sonnet 5 must fall
+  // through to the same $3/$15 family rate every other Sonnet already pays,
+  // not keep billing the lapsed introductory price forever.
+  const beforeExpiry = Date.parse('2026-08-30T00:00:00Z');
+  const afterExpiry = Date.parse('2026-09-01T00:00:00Z');
+  const introRate = rateFor('claude-sonnet-5', p, beforeExpiry);
+  check('sonnet 5 intro rate holds before expiry',
+    introRate && introRate.in === 2 && introRate.out === 10, JSON.stringify(introRate));
+  const lapsedRate = rateFor('claude-sonnet-5', p, afterExpiry);
+  check('sonnet 5 falls back to the family rate after the intro expires',
+    lapsedRate && lapsedRate.in === 3 && lapsedRate.out === 15, JSON.stringify(lapsedRate));
+
+  // totalUsd(): reported cost is trusted only when nothing in scope batched
+  // more than one billed attempt - a multi-attempt response's reported cost
+  // never covers its advisor/retry attempts (see digests.js), so trusting it
+  // there would silently drop them from the total.
+  const byModel = { 'claude-opus-5': { in: 0, out: 1e6, cacheR: 0, cacheW: 0, cacheW1h: 0 } }; // = $25
+  check('single-attempt scope trusts the reported cost',
+    totalUsd(5, false, byModel, p) === 5, 'got ' + totalUsd(5, false, byModel, p));
+  check('multi-attempt scope ignores reported cost and computes from tokens',
+    totalUsd(5, true, byModel, p) === 25, 'got ' + totalUsd(5, true, byModel, p));
+  check('no reported cost always computes from tokens',
+    totalUsd(0, false, byModel, p) === 25, 'got ' + totalUsd(0, false, byModel, p));
 
   // 1M output tokens on Opus is exactly the headline rate.
   const oneM = priceUsage({ 'claude-opus-5': { in: 0, out: 1e6, cacheR: 0, cacheW: 0, cacheW1h: 0 } }, p);
@@ -301,6 +332,8 @@ group('token counting (transcript dedup)');
     check('<synthetic> excluded from model list',
       !('<synthetic>' in d.byModel), 'synthetic notices are not API usage');
     check('tool use still detected across split lines', d.bashes === 1, `bashes=${d.bashes}`);
+    check('an ordinary single-attempt session is not flagged multi-attempt',
+      d.hadMultiAttempt === false, 'hadMultiAttempt=' + d.hadMultiAttempt);
   } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
 }
 
@@ -363,6 +396,11 @@ group('token counting (usage.iterations)');
     const day = (d.byDay['2026-03-01'] || {}).models || {};
     check('byDay splits attempts by model too',
       (day['claude-fable-5'] || {}).out === 5078, 'day=' + JSON.stringify(day));
+    check('a 3-attempt response flags the session as multi-attempt',
+      d.hadMultiAttempt === true, 'hadMultiAttempt=' + d.hadMultiAttempt);
+    check('and flags the day it landed on',
+      (d.byDay['2026-03-01'] || {}).multi === true,
+      'multi=' + (d.byDay['2026-03-01'] || {}).multi);
   } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
 }
 
@@ -469,6 +507,273 @@ group('guardrail hook (executed for real)');
     'exit ' + broken.status + ' - a bad config must not block every tool call');
 
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/* ------------------------------------------------------------------ mcp */
+group('mcp (isolated ~/.claude.json)');
+{
+  const { readJsonSafe } = require('./lib/util');
+  const keyOf = (dir) => path.resolve(dir).replace(/\\/g, '/');
+
+  // Runs one lib/mcp.js call in a fresh child process with HOME/USERPROFILE
+  // pointed at a throwaway directory, so this suite never touches the real
+  // ~/.claude.json. lib/mcp.js computes CLAUDE_JSON = path.join(HOME, ...) at
+  // require time, so isolation has to happen before that require, in a
+  // process of its own - an in-process HOME swap plus a require-cache bust
+  // would be fragile and easy to get wrong.
+  function mcpCall(homeDir, fnName, args) {
+    const mcpPath = path.join(ROOT, 'lib', 'mcp');
+    const script = `
+      const mcp = require(${JSON.stringify(mcpPath)});
+      try {
+        const result = mcp[${JSON.stringify(fnName)}](${args.map((a) => JSON.stringify(a)).join(',')});
+        process.stdout.write(JSON.stringify({ ok: true, result }));
+      } catch (err) {
+        process.stdout.write(JSON.stringify({ ok: false, message: err.message, partial: !!err.partial, file: err.file || null }));
+      }
+    `;
+    const r = spawnSync(process.execPath, ['-e', script], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
+    });
+    const out = (r.stdout || '').trim();
+    if (!out) throw new Error('mcp child produced no output - stderr: ' + r.stderr);
+    return JSON.parse(out);
+  }
+
+  // user-scope save + delete round trip.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    try {
+      let r = mcpCall(home, 'saveServer', ['user', null, 'srv1', { command: 'foo' }]);
+      check('user save reports ok', r.ok === true, JSON.stringify(r));
+      let doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('user save writes mcpServers.srv1',
+        !!(doc && doc.mcpServers && doc.mcpServers.srv1 && doc.mcpServers.srv1.command === 'foo'), JSON.stringify(doc));
+
+      r = mcpCall(home, 'deleteServer', ['user', null, 'srv1']);
+      check('user delete reports ok', r.ok === true, JSON.stringify(r));
+      doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('user delete removes srv1', !doc.mcpServers || !doc.mcpServers.srv1, JSON.stringify(doc));
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }
+
+  // local-scope save + delete round trip.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    try {
+      let r = mcpCall(home, 'saveServer', ['local', projA, 'srv1', { command: 'bar' }]);
+      check('local save reports ok', r.ok === true, JSON.stringify(r));
+      let doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('local save writes projects[dir].mcpServers.srv1',
+        doc.projects[keyOf(projA)].mcpServers.srv1.command === 'bar', JSON.stringify(doc));
+
+      r = mcpCall(home, 'deleteServer', ['local', projA, 'srv1']);
+      check('local delete reports ok', r.ok === true, JSON.stringify(r));
+      doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('local delete removes srv1', !doc.projects[keyOf(projA)].mcpServers.srv1, JSON.stringify(doc));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+    }
+  }
+
+  // Deleting a name that was never configured must be a pure no-op - no
+  // ~/.claude.json scaffold left behind for a project that was never touched.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projB = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    try {
+      const r = mcpCall(home, 'deleteServer', ['local', projB, 'ghost']);
+      check('deleting a never-configured name reports ok', r.ok === true, JSON.stringify(r));
+      const doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('and leaves no project/mcpServers scaffold behind',
+        doc !== null && Object.keys(doc).length === 0, JSON.stringify(doc));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projB, { recursive: true, force: true });
+    }
+  }
+
+  // user -> local: single ~/.claude.json transaction.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    try {
+      mcpCall(home, 'saveServer', ['user', null, 'srv1', { command: 'foo' }]);
+      const r = mcpCall(home, 'moveServer', [{ scope: 'user', dir: null }, { scope: 'local', dir: projA }, 'srv1']);
+      check('user->local move reports ok', r.ok === true, JSON.stringify(r));
+      const doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('user->local removes it from user scope', !doc.mcpServers || !doc.mcpServers.srv1, JSON.stringify(doc));
+      check('user->local lands it in local scope',
+        doc.projects[keyOf(projA)].mcpServers.srv1.command === 'foo', JSON.stringify(doc));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+    }
+  }
+
+  // local -> user: same transaction, the other direction.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    try {
+      mcpCall(home, 'saveServer', ['local', projA, 'srv1', { command: 'foo' }]);
+      const r = mcpCall(home, 'moveServer', [{ scope: 'local', dir: projA }, { scope: 'user', dir: null }, 'srv1']);
+      check('local->user move reports ok', r.ok === true, JSON.stringify(r));
+      const doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('local->user removes it from local scope', !doc.projects[keyOf(projA)].mcpServers.srv1, JSON.stringify(doc));
+      check('local->user lands it in user scope', doc.mcpServers.srv1.command === 'foo', JSON.stringify(doc));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+    }
+  }
+
+  // local(A) -> local(B): same file, different project - still one transaction.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    const projB = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    try {
+      mcpCall(home, 'saveServer', ['local', projA, 'srv1', { command: 'foo' }]);
+      const r = mcpCall(home, 'moveServer', [{ scope: 'local', dir: projA }, { scope: 'local', dir: projB }, 'srv1']);
+      check('local(A)->local(B) reports ok', r.ok === true, JSON.stringify(r));
+      const doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('gone from project A', !(doc.projects[keyOf(projA)] && doc.projects[keyOf(projA)].mcpServers.srv1), JSON.stringify(doc));
+      check('present in project B', doc.projects[keyOf(projB)].mcpServers.srv1.command === 'foo', JSON.stringify(doc));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+      fs.rmSync(projB, { recursive: true, force: true });
+    }
+  }
+
+  // project -> local: cross-file, straightforward direction.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    const projB = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    try {
+      mcpCall(home, 'saveServer', ['project', projA, 'srv1', { command: 'foo' }]);
+      const r = mcpCall(home, 'moveServer', [{ scope: 'project', dir: projA }, { scope: 'local', dir: projB }, 'srv1']);
+      check('project->local reports ok', r.ok === true, JSON.stringify(r));
+      const mcpJson = readJsonSafe(path.join(projA, '.mcp.json'));
+      check('gone from source .mcp.json', !(mcpJson && mcpJson.mcpServers && mcpJson.mcpServers.srv1), JSON.stringify(mcpJson));
+      const doc = readJsonSafe(path.join(home, '.claude.json'));
+      check('present in target local scope', doc.projects[keyOf(projB)].mcpServers.srv1.command === 'foo', JSON.stringify(doc));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+      fs.rmSync(projB, { recursive: true, force: true });
+    }
+  }
+
+  // local -> project, with the source delete forced to fail: the write to the
+  // target must still have happened, and the failure must come back as a
+  // partial success (config safe in both places), never a silent loss.
+  //
+  // This relies on chmod 0o444 actually blocking the write, which holds on
+  // Windows and for a normal POSIX user, but not for this suite run as root
+  // on Linux/CI, where root ignores the read-only permission bit and the
+  // "delete fails" branch below this comment never triggers.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    const claudeJson = path.join(home, '.claude.json');
+    try {
+      mcpCall(home, 'saveServer', ['local', projA, 'srv1', { command: 'foo' }]);
+      fs.chmodSync(claudeJson, 0o444);
+      const r = mcpCall(home, 'moveServer', [{ scope: 'local', dir: projA }, { scope: 'project', dir: projA }, 'srv1']);
+      check('local->project reports partial when the source delete fails',
+        r.ok === false && r.partial === true, JSON.stringify(r));
+      check('partial response names the target file',
+        typeof r.file === 'string' && r.file.endsWith('.mcp.json'), JSON.stringify(r));
+      const mcpJson = readJsonSafe(path.join(projA, '.mcp.json'));
+      check('target write happened despite the later failure', mcpJson.mcpServers.srv1.command === 'foo', JSON.stringify(mcpJson));
+      fs.chmodSync(claudeJson, 0o666);
+      const doc = readJsonSafe(claudeJson);
+      check('source still has it too - nothing was silently lost',
+        doc.projects[keyOf(projA)].mcpServers.srv1.command === 'foo', JSON.stringify(doc));
+    } finally {
+      try { fs.chmodSync(claudeJson, 0o666); } catch { /* already restored */ }
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+    }
+  }
+
+  // Collision at the target: refuse, mutate nothing.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    try {
+      mcpCall(home, 'saveServer', ['user', null, 'srv1', { command: 'foo' }]);
+      mcpCall(home, 'saveServer', ['local', projA, 'srv1', { command: 'already-here' }]);
+      const before = readJsonSafe(path.join(home, '.claude.json'));
+      const r = mcpCall(home, 'moveServer', [{ scope: 'user', dir: null }, { scope: 'local', dir: projA }, 'srv1']);
+      check('collision reports failure', r.ok === false, JSON.stringify(r));
+      check('collision message says already exists', /already exists/.test(r.message), r.message);
+      const after = readJsonSafe(path.join(home, '.claude.json'));
+      check('neither side was mutated', JSON.stringify(before) === JSON.stringify(after), JSON.stringify({ before, after }));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+    }
+  }
+
+  // Same location: refuse, mutate nothing.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    try {
+      mcpCall(home, 'saveServer', ['user', null, 'srv1', { command: 'foo' }]);
+      const before = readJsonSafe(path.join(home, '.claude.json'));
+      const r = mcpCall(home, 'moveServer', [{ scope: 'user', dir: null }, { scope: 'user', dir: null }, 'srv1']);
+      check('same-location reports failure', r.ok === false, JSON.stringify(r));
+      check('same-location message says so', /same/.test(r.message), r.message);
+      const after = readJsonSafe(path.join(home, '.claude.json'));
+      check('doc untouched', JSON.stringify(before) === JSON.stringify(after), JSON.stringify({ before, after }));
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }
+
+  // Collision at the target when the existing entry is a literal `null`
+  // config (e.g. someone hand-edited ~/.claude.json). getServerConfig()'s
+  // "absent" sentinel is undefined, not null, precisely so a stored null does
+  // not read the same as "nothing here" and slip past this check.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-proj-'));
+    const claudeJson = path.join(home, '.claude.json');
+    try {
+      mcpCall(home, 'saveServer', ['user', null, 'srv1', { command: 'foo' }]);
+      const doc = readJsonSafe(claudeJson) || {};
+      doc.projects = doc.projects || {};
+      doc.projects[keyOf(projA)] = { mcpServers: { srv1: null } };
+      fs.writeFileSync(claudeJson, JSON.stringify(doc, null, 2));
+      const before = readJsonSafe(claudeJson);
+      const r = mcpCall(home, 'moveServer', [{ scope: 'user', dir: null }, { scope: 'local', dir: projA }, 'srv1']);
+      check('a null-valued target entry is still treated as a collision', r.ok === false, JSON.stringify(r));
+      check('collision message says already exists', /already exists/.test(r.message || ''), r.message);
+      const after = readJsonSafe(claudeJson);
+      check('neither side was mutated', JSON.stringify(before) === JSON.stringify(after), JSON.stringify({ before, after }));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(projA, { recursive: true, force: true });
+    }
+  }
+
+  // A malformed `from` (missing/relative dir for a scope that needs one) must
+  // produce the same kind of descriptive Error that a malformed `to` already
+  // does, not a raw TypeError from path.isAbsolute()/path.resolve() further in.
+  {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mcp-'));
+    try {
+      const r = mcpCall(home, 'moveServer', [{ scope: 'local', dir: null }, { scope: 'user', dir: null }, 'srv1']);
+      check('malformed from reports failure', r.ok === false, JSON.stringify(r));
+      check('malformed from gets a descriptive message, not a raw TypeError',
+        /source project required/.test(r.message || ''), r.message);
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }
 }
 
 /* -------------------------------------------------------------- security */

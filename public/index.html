@@ -128,7 +128,8 @@ header{display:flex;align-items:center;gap:var(--sp-4);flex-wrap:wrap;
 table.eff .beat{font:11px/1.6 var(--mono);color:var(--faint);margin-top:3px}
 table.eff .beat code{color:var(--dim)}
 .mcp-acts{grid-row:1/3;grid-column:2/3;display:flex;gap:var(--sp-2);align-items:center}
-@media (max-width:620px){.mcp-row{grid-template-columns:1fr}.mcp-acts{grid-row:auto;grid-column:1/2}}
+.mcp-move-panel{grid-column:1/3;display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap;margin-top:var(--sp-2)}
+@media (max-width:620px){.mcp-row{grid-template-columns:1fr}.mcp-acts{grid-row:auto;grid-column:1/2}.mcp-move-panel{grid-column:1/2}}
 .sr-line .sr-role{color:var(--faint);text-transform:uppercase;font-size:9px;letter-spacing:1.1px;margin-right:6px}
 @media (max-width:620px){#usage .u-head{gap:var(--sp-3)}#usage .u-big{font-size:18px}}
 
@@ -823,9 +824,12 @@ async function loadMeta() {
   initQuit();
   fillProjectSelects();
 }
-function fillProjectSelects() {
-  const opts = S.meta.projects.map((p) =>
+function projectOptionsHtml() {
+  return S.meta.projects.map((p) =>
     `<option value="${esc(p.path)}"${p.exists ? '' : ' disabled'}>${esc(p.path)}${p.exists ? '' : '  (missing)'}</option>`).join('');
+}
+function fillProjectSelects() {
+  const opts = projectOptionsHtml();
   $('#projsel').innerHTML = '<option value="">- choose project -</option>' + opts;
   $('#effsel').innerHTML = '<option value="">- choose project -</option>' + opts;
   $('#gprojsel').innerHTML = '<option value="">- choose project -</option>' + opts;
@@ -2168,6 +2172,10 @@ function renderMcp() {
   const warn = j.claudeJsonBroken
     ? '<div class="card"><div class="bd"><b style="color:var(--deny)">~/.claude.json is not valid JSON.</b> User and Local servers cannot be read or written until that is fixed - Maestro will not overwrite a file it could not parse.</div></div>'
     : '';
+  // Identical for every row in every scope card - computed once per render
+  // rather than once per server, since j.scopes.map(...).servers.map(...)
+  // used to call it again for every row for no reason.
+  const projOpts = projectOptionsHtml();
   const cards = j.scopes.map((sc) => {
     const rows = sc.servers.length ? sc.servers.map((s) => {
       const appr = s.approval ? `
@@ -2186,7 +2194,20 @@ function renderMcp() {
           </div>
           <div class="mcp-detail">${esc(s.detail) || '<span style="color:var(--faint)">no command or url recorded</span>'}</div>
           <div class="mcp-acts">${appr}
+            <button class="btn sm" data-mcp-move-toggle>Move</button>
             <button class="btn sm danger" data-mcp-del="${esc(s.name)}" data-scope="${esc(sc.scope)}">Remove</button>
+          </div>
+          <div class="mcp-move-panel hidden">
+            <select class="mcp-move-toscope" aria-label="Target scope for ${esc(s.name)}">
+              <option value="user">User - every project</option>
+              <option value="project">Project - .mcp.json, shared with the repo</option>
+              <option value="local">Local - this project, this machine only</option>
+            </select>
+            <select class="mcp-move-todir hidden" aria-label="Target project for ${esc(s.name)}">
+              <option value="">- choose project -</option>${projOpts}
+            </select>
+            <button class="btn sm amber" data-mcp-move-confirm="${esc(s.name)}" data-scope="${esc(sc.scope)}" data-env="${s.envKeys.length ? '1' : '0'}" data-envkeys="${esc(s.envKeys.join(', '))}">Confirm move</button>
+            <button class="btn sm" data-mcp-move-cancel>Cancel</button>
           </div>
         </div>`;
     }).join('') : `<div class="empty">No ${esc(sc.scope)} MCP servers.</div>`;
@@ -2251,6 +2272,43 @@ $('#mcp-add').addEventListener('click', async () => {
   } catch (err) { toast(err.message, 'err'); }
 });
 $('#mcplist').addEventListener('click', async (e) => {
+  const toggle = e.target.closest('[data-mcp-move-toggle]');
+  if (toggle) {
+    const panel = toggle.closest('.mcp-row').querySelector('.mcp-move-panel');
+    const wasOpen = !panel.classList.contains('hidden');
+    // Only one panel open at a time - close every other one first.
+    $('#mcplist').querySelectorAll('.mcp-move-panel').forEach((p) => p.classList.add('hidden'));
+    panel.classList.toggle('hidden', wasOpen);
+    return;
+  }
+  const cancel = e.target.closest('[data-mcp-move-cancel]');
+  if (cancel) { cancel.closest('.mcp-move-panel').classList.add('hidden'); return; }
+
+  const confirmMove = e.target.closest('[data-mcp-move-confirm]');
+  if (confirmMove) {
+    const panel = confirmMove.closest('.mcp-move-panel');
+    const name = confirmMove.dataset.mcpMoveConfirm;
+    const fromScope = confirmMove.dataset.scope;
+    const toScope = panel.querySelector('.mcp-move-toscope').value;
+    const toDir = toScope === 'user' ? '' : panel.querySelector('.mcp-move-todir').value;
+    if (toScope !== 'user' && !toDir) return toast('Choose a target project first', 'err');
+    if (confirmMove.dataset.env === '1' && toScope === 'project') {
+      const ok = confirm(`This server has env values (${confirmMove.dataset.envkeys}). Moving it into .mcp.json checks those into git and shares them with anyone who clones the project. Continue?`);
+      if (!ok) return;
+    }
+    try {
+      const j = await api('/api/mcp-move', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: { scope: fromScope, dir: MC.dir }, to: { scope: toScope, dir: toDir }, name }) });
+      if (j.partial) toast(j.warning, 'err', j.file);
+      else {
+        const dest = toScope === 'user' ? 'user scope' : `${toScope} scope (${toDir})`;
+        toast(`${name} moved to ${dest}${toScope === 'project' ? ' - check its approval state there before relying on it' : ''}`);
+      }
+      await loadMcp();
+    } catch (err) { toast(err.message, 'err'); }
+    return;
+  }
+
   const del = e.target.closest('[data-mcp-del]');
   if (!del) return;
   const name = del.dataset.mcpDel;
@@ -2263,6 +2321,11 @@ $('#mcplist').addEventListener('click', async (e) => {
   } catch (err) { toast(err.message, 'err'); }
 });
 $('#mcplist').addEventListener('change', async (e) => {
+  const toscope = e.target.closest('.mcp-move-toscope');
+  if (toscope) {
+    toscope.closest('.mcp-move-panel').querySelector('.mcp-move-todir').classList.toggle('hidden', toscope.value === 'user');
+    return;
+  }
   const sel = e.target.closest('.mcp-appr');
   if (!sel) return;
   try {

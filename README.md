@@ -189,6 +189,15 @@ it has been approved, and records that per project. Each row shows that state - 
 or **not started** - and lets you change it, because "configured" and "will actually start" are
 different questions and the file alone answers only one.
 
+Each row also has a **Move** button to relocate a server to a different scope or a
+different project entirely - user, project, or local, picked from the same list of
+known projects the rest of Maestro uses. Moving a server that has `env` values into
+`.mcp.json` warns first, since that file is typically checked into git. Moving a
+server does not touch approval state: a server moved into project scope keeps
+whatever `enabledMcpjsonServers`/`disabledMcpjsonServers` entry that name already has
+in the target project, so it can land approved or blocked, not only pending - check
+its row there rather than assuming.
+
 Two of those scopes live inside `~/.claude.json`, which is Claude Code's own state file and holds
 far more than MCP config. Every write reads the whole document, changes only the `mcpServers`
 subtree, and keeps a `.maestro-bak.*` copy first - and a file that will not parse is **refused,
@@ -383,6 +392,13 @@ In priority order:
 1. `costUSD` recorded in the transcript, when Claude Code wrote one. Not an estimate.
 2. Otherwise, the exact token counts multiplied by a rate table.
 
+**Except when a turn ran more than one billed attempt** - an advisor consultation,
+a retried model. `costUSD` is written from the same top-level usage object that
+describes only the attempt that produced the returned message, so it never covers
+the other attempts. A session or day with one of those always falls back to the
+token-count total instead, which does cover every attempt - preferring the
+"real" number only when nothing in scope needed a fallback in the first place.
+
 ```
 usd = in/1M           × rateIn
     + out/1M          × rateOut
@@ -402,6 +418,12 @@ input rate automatically.
 Opus point release starts with `claude-opus-`, so a model released tomorrow prices
 itself with no edit. Only a genuinely new *tier* needs a line, and anything that
 matches nothing is shown as **unpriced** rather than silently costing $0.
+
+**One entry can expire.** Sonnet 5 launched at an introductory $2/$10 that every
+other Sonnet (4.6, 4.5, 4.0) never had - they bill at $3/$15. That is a sixth,
+more specific line (`claude-sonnet-5`) with an `until` date; past it, `claude-sonnet-5`
+falls through to the plain `claude-sonnet` family rate like everything else, instead
+of quietly billing the lapsed introductory price forever.
 
 Fast mode (`usage.speed === "fast"`) is priced from its own premium table and
 labelled separately.

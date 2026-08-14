@@ -80,10 +80,13 @@ POST /api/mcp-move   body: { from: {scope, dir}, to: {scope, dir}, name }
 ```
 
 Mirrors the existing `PUT`/`DELETE /api/mcp` handlers: parse body, call `moveServer`,
-log `mcp move`. On a thrown error with `.partial`, respond `200 { ok: true, partial:
-true, file, warning: err.message }`; on any other thrown error, the existing generic
-error-response path in `routes.js` already turns a thrown `Error` into a 400 — no new
-handling needed there.
+log `mcp move`. On a thrown error with `.partial`, catch it and respond `200 { ok: true,
+partial: true, file, warning: err.message }` instead of letting it propagate. Any other
+thrown error (collision, same-location, validation) is left to propagate - `server.js`'s
+request loop already turns any thrown `Error` into `500 { error: err.message }`, exactly
+like every other mutation route (there is no 400 path anywhere in this codebase). The
+frontend's `api()` helper reads `.message` off the thrown error the same way regardless
+of status code, so no special-casing is needed for the error side.
 
 ## UI (`public/index.html`, the `MC` code + MCP tab)
 
@@ -126,12 +129,15 @@ No change to `GET /api/mcp`'s response shape — the target-project list comes f
 
 | Condition | Response |
 |---|---|
-| source === target location | 400, no write attempted |
-| target missing/relative dir for non-user scope | 400, no write attempted |
-| source server not found (stale UI state) | 400, no write attempted |
-| name collision at target | 400, no write attempted |
-| write to target fails (bad JSON, permissions) | 400/500 from the existing `editClaudeJson`/`editMcpJson` error paths, no write attempted, source untouched |
+| source === target location | 500 `{error}`, no write attempted |
+| target missing/relative dir for non-user scope | 500 `{error}`, no write attempted |
+| source server not found (stale UI state) | 500 `{error}`, no write attempted |
+| name collision at target | 500 `{error}`, no write attempted |
+| write to target fails (bad JSON, permissions) | 500 `{error}` from the existing `editClaudeJson`/`editMcpJson` error paths, no write attempted, source untouched |
 | write to target succeeds, delete from source fails | 200 with `partial: true` — never reported as a hard failure, because the data is safe, just duplicated |
+
+(500 here matches every other mutation route in this codebase — there is no 400 path;
+see the Route section above.)
 
 ## Testing
 

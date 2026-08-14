@@ -184,6 +184,21 @@
 
   <!-- ============================ GUARDRAILS ============================ -->
   <section id="view-guard" role="tabpanel" aria-labelledby="tab-guard" class="hidden">
+    <div class="card" id="g-explainer" style="margin-bottom:16px">
+      <h3>What this tab does</h3>
+      <div class="bd">
+        <p style="margin:0 0 var(--sp-2)">A <b>guardrail</b> is a hard block on a file or a command - stronger than a
+          permission rule. A permission <b>deny</b> rule is skipped entirely in <code>bypassPermissions</code> mode;
+          a guardrail still blocks there, because it runs as a script <i>before</i> the permission system is asked at
+          all, and Claude is only told "no" and why.</p>
+        <ol style="margin:0;padding-left:1.2em;color:var(--dim);font:13px var(--sans)">
+          <li>List the files and commands to block below (or use the starter set)</li>
+          <li>Press <b>Apply guardrails</b> - this writes the hook once, and edits after that just update its list instantly</li>
+          <li>It enforces silently, in every permission mode including bypass</li>
+        </ol>
+      </div>
+    </div>
+
     <div class="toolbar">
       <div class="scope-rail" id="gscopes">
         <button data-scope="user" class="on">User</button>
@@ -192,7 +207,15 @@
       </div>
       <select id="gprojsel" class="hidden" style="max-width:420px"></select>
     </div>
-    <div class="scope-note">Hard blocks enforced by a generated <b>PreToolUse hook</b> (exit code 2) - active in <b>every</b> permission mode, including auto and bypassPermissions, where plain deny rules are skipped. Never asks; just refuses and tells Claude why.</div>
+
+    <div class="card hidden" id="g-empty-cta" style="margin-bottom:16px;border-color:var(--brass)">
+      <h3>Nothing blocked yet at this scope</h3>
+      <div class="bd">
+        <p style="margin:0 0 var(--sp-3)">Most people start with the same handful of rules: secret files, and the
+          commands that do the most damage if they run by accident.</p>
+        <button class="btn amber" id="g-starter">+ Add common guardrails</button>
+      </div>
+    </div>
 
     <div class="permcols" style="margin-bottom:16px">
       <div class="card" style="margin-bottom:0">
@@ -216,6 +239,25 @@
           </div>
           <div class="scope-note" style="margin:8px 0 0">Matches the token <b>anywhere</b> in the command line - catches <code>cd x &amp;&amp; rm -rf .</code>, unlike prefix-matched deny rules.</div>
         </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h3>Test a rule</h3>
+      <div class="bd">
+        <p class="scope-note" style="margin:0 0 var(--sp-3)">Checks the rules listed above as they stand right now -
+          you do not need to press Apply first.</p>
+        <div class="permcols">
+          <div class="addrow" style="margin:0">
+            <input id="gtest-file" placeholder="a file path, e.g. /home/me/project/.env">
+            <button class="btn sm" id="gtest-file-btn">Test path</button>
+          </div>
+          <div class="addrow" style="margin:0">
+            <input id="gtest-cmd" placeholder="a command, e.g. rm -rf build">
+            <button class="btn sm" id="gtest-cmd-btn">Test command</button>
+          </div>
+        </div>
+        <div id="gtest-result" style="margin-top:10px"></div>
       </div>
     </div>
 

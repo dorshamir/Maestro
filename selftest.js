@@ -62,6 +62,14 @@ const frontend = [page, ...frontendJS.map((f) => fs.readFileSync(f, 'utf8'))].jo
 // Everything that ships as server-side code, for the whole-codebase greps.
 const allSource = [SERVER, ...libFiles].map((f) => fs.readFileSync(f, 'utf8')).join('\n');
 
+// CommonJS has no top-level await, and one group below (the guardrail rule
+// tester) is genuinely async - it shells out to node, same as run() in
+// lib/util.js does in the real server, which is why sync exec is banned
+// below in the first place. Everything else in this file is synchronous and
+// unaffected: wrapping the whole run in one IIFE preserves top-to-bottom
+// group order without having to thread async through every other check.
+(async () => {
+
 /* ------------------------------------------------------------ syntax */
 group('syntax');
 for (const file of [SERVER, ...libFiles, ...frontendJS, __filename]) {
@@ -539,6 +547,41 @@ group('guardrail hook (executed for real)');
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/* ---------------------------------------------------- guardrail rule tester */
+group('guardrail rule tester (against a draft config, not the saved one)');
+{
+  const { testFile, testCommand } = require('./lib/guardrail-analysis');
+
+  const cfg = { files: ['.env', 'secrets/**'], commands: ['rm -rf'] };
+  {
+    const r = await testFile(cfg, '/p/.env');
+    check('testFile: guarded file blocked', r.blocked === true, JSON.stringify(r));
+    check('testFile: reason names the rule', /\.env/.test(r.reason), r.reason);
+  }
+  {
+    const r = await testFile(cfg, '/p/src/app.js');
+    check('testFile: ordinary file allowed', r.blocked === false, JSON.stringify(r));
+  }
+  {
+    const r = await testCommand(cfg, 'cd /x && rm -rf build');
+    check('testCommand: blocked token after && is caught', r.blocked === true, JSON.stringify(r));
+  }
+  {
+    const r = await testCommand(cfg, 'ls -la');
+    check('testCommand: harmless command allowed', r.blocked === false, JSON.stringify(r));
+  }
+  {
+    // The whole point: this tests the draft in memory, not whatever (if
+    // anything) is written to disk for this scope/project.
+    const r = await testFile({ files: ['*.pem'], commands: [] }, '/p/certs/key.pem');
+    check('testFile: reacts to a config that was never applied/saved', r.blocked === true, JSON.stringify(r));
+  }
+  {
+    const r = await testFile({ files: [], commands: [] }, '/p/.env');
+    check('testFile: empty draft config blocks nothing', r.blocked === false, JSON.stringify(r));
+  }
+}
+
 /* ------------------------------------------------------------------ mcp */
 group('mcp (isolated ~/.claude.json)');
 {
@@ -906,3 +949,5 @@ group('backups (list + restore)');
 /* ---------------------------------------------------------------- report */
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+
+})().catch((err) => { console.error(err); process.exit(1); });

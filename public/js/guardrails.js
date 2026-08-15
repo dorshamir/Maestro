@@ -28,7 +28,60 @@ async function loadGuard() {
     ? '<span class="chip project">active</span> hook installed and registered - list edits apply on next Apply, instantly to running sessions'
     : '<span class="chip local">inactive</span> not installed yet for this scope - press Apply';
   renderGuard();
+  loadGuardGaps();
 }
+
+// Machine-wide, not scoped to G.dir - deliberately independent of the
+// scope/project picker above, since the point is comparing across projects.
+async function loadGuardGaps() {
+  try {
+    const j = await api('/api/guard-gaps');
+    $('#gcov-card').classList.toggle('hidden', j.gaps.length === 0);
+    $('#gcov-results').innerHTML = j.gaps.map((g, i) => `
+      <div class="hook" style="align-items:center">
+        <div class="body"><b style="font:600 12px var(--mono)">${esc(g.dir)}</b>
+          <div class="m">missing ${[...g.files, ...g.commands].map(esc).join(', ')} - already blocked in ${esc(g.sibling)}</div></div>
+        <button class="btn sm ghost" data-gcov-dismiss="${i}">Not applicable</button>
+        <button class="btn sm amber" data-gcov-fix="${i}">Add missing rules</button>
+      </div>`).join('');
+    $('#gcov-results').dataset.gaps = JSON.stringify(j.gaps);
+  } catch { /* best effort - this card is a nice-to-have, not core to the tab */ }
+}
+$('#gcov-results').addEventListener('click', async (e) => {
+  const gaps = JSON.parse($('#gcov-results').dataset.gaps || '[]');
+  const dismissBtn = e.target.closest('[data-gcov-dismiss]');
+  if (dismissBtn) {
+    const g = gaps[Number(dismissBtn.dataset.gcovDismiss)]; if (!g) return;
+    try {
+      await api('/api/guard-gaps-dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dir: g.dir, key: g.key }) });
+      loadGuardGaps();
+    } catch (err) { toast(err.message, 'err'); }
+    return;
+  }
+  const fixBtn = e.target.closest('[data-gcov-fix]');
+  if (fixBtn) {
+    const g = gaps[Number(fixBtn.dataset.gcovFix)]; if (!g) return;
+    fixBtn.disabled = true;
+    try {
+      // Reuse whichever scope is already registered for that project, if
+      // either is; default to 'project' (shared, committed) for a first rule.
+      const [proj, local] = await Promise.all([
+        api(`/api/guard?scope=project&dir=${encodeURIComponent(g.dir)}`),
+        api(`/api/guard?scope=local&dir=${encodeURIComponent(g.dir)}`),
+      ]);
+      const target = local.registered ? local : proj;
+      const scope = local.registered ? 'local' : 'project';
+      const files = [...new Set([...target.files, ...g.files])];
+      const commands = [...new Set([...target.commands, ...g.commands])];
+      await api('/api/guard', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope, dir: g.dir, files, commands,
+          mirrorDeny: target.mirrorDeny !== false, forbidBypass: target.forbidBypass }) });
+      toast(`Added missing rules to ${g.dir}`);
+      if (G.dir === g.dir) loadGuard(); else loadGuardGaps();
+    } catch (err) { toast(err.message, 'err'); fixBtn.disabled = false; }
+  }
+});
 $('#gscopes').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   G.scope = b.dataset.scope;

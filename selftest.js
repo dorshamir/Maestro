@@ -631,6 +631,99 @@ group('near-miss guardrail synthesis (scanning transcript history)');
     Array.isArray(scanTranscriptForRisks(path.join(os.tmpdir(), 'maestro-does-not-exist.jsonl'))));
 }
 
+/* --------------------------------------------------- cross-project gaps */
+group('cross-project guardrail gap detector');
+{
+  const { ownGuardRules, computeGaps } = require('./lib/guardrail-analysis');
+  const { applyGuard } = require('./lib/guardrails');
+
+  // ownGuardRules: dir-relative (no HOME isolation needed - readGuard
+  // never touches CLAUDE_DIR for 'project'/'local' scope). Entries are
+  // kind-tagged (file: / cmd:) so a gap's `missing` list can later be split
+  // back into {files, commands} for propagate - a guard command rule and a
+  // guard file rule are never interchangeable even if the two strings
+  // happened to collide.
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-gap-proj-'));
+    try {
+      check('a project with nothing applied yet has an empty rule set',
+        ownGuardRules(dir).size === 0);
+      applyGuard({ scope: 'project', dir, files: ['.env'], commands: ['rm -rf'] });
+      const rules = ownGuardRules(dir);
+      check('picks up applied rules, tagged by kind',
+        rules.has('file:.env') && rules.has('cmd:rm -rf'), [...rules].join(','));
+      // 'project' and 'local' scope share one rule file per directory (only
+      // which settings file registers the hook differs) - applying at
+      // 'local' scope for the same dir replaces the same file, it does not
+      // add a second independent list.
+      applyGuard({ scope: 'local', dir, files: [], commands: ['git push --force'] });
+      const rules2 = ownGuardRules(dir);
+      check('applying at local scope for the same dir replaces the shared rule file',
+        rules2.has('cmd:git push --force') && !rules2.has('file:.env'), [...rules2].join(','));
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  // computeGaps: pure, no I/O - takes a Map<dir, Set<rule>> directly.
+  {
+    const rulesByDir = new Map([
+      ['/a', new Set()],                          // nothing at all
+      ['/b', new Set(['.env', 'rm -rf'])],        // a strict superset of /a
+      ['/c', new Set(['.env'])],                  // strict subset of /b
+      ['/d', new Set(['DROP TABLE'])],            // incomparable to /b - not a subset either way
+    ]);
+    const gaps = computeGaps(rulesByDir);
+    const byDir = Object.fromEntries(gaps.map((g) => [g.dir, g]));
+
+    check('flags a project with zero rules against a sibling that has some',
+      !!byDir['/a'] && byDir['/a'].sibling === '/b', JSON.stringify(gaps));
+    check('missing lists exactly the sibling rules this project lacks',
+      byDir['/a'] && byDir['/a'].missing.sort().join(',') === '.env,rm -rf', JSON.stringify(byDir['/a']));
+    check('flags a project whose rules are a strict subset of a sibling\'s',
+      !!byDir['/c'] && byDir['/c'].sibling === '/b' && byDir['/c'].missing.join(',') === 'rm -rf', JSON.stringify(byDir['/c']));
+    check('does not flag a project whose rules are not a subset of anything (incomparable, not a superset)',
+      !byDir['/d'], JSON.stringify(byDir['/d']));
+    check('does not flag the project that already has the most rules',
+      !byDir['/b'], JSON.stringify(byDir['/b']));
+
+    // Two equally-sized, equally-covering supersets: pick one deterministically
+    // (the largest) rather than nondeterministically depending on Map order.
+    const tied = new Map([
+      ['/x', new Set()],
+      ['/y', new Set(['a', 'b'])],
+      ['/z', new Set(['a', 'b', 'c'])],
+    ]);
+    const g = computeGaps(tied).find((r) => r.dir === '/x');
+    check('among multiple dominating siblings, proposes the most comprehensive one',
+      g && g.sibling === '/z', JSON.stringify(g));
+  }
+
+  // splitTaggedRules: the missing list mixes file rules and command rules -
+  // propagate has to put each back in the right array, not just append the
+  // raw strings to both.
+  {
+    const { splitTaggedRules } = require('./lib/guardrail-analysis');
+    const r = splitTaggedRules(['file:.env', 'cmd:rm -rf', 'file:*.pem', 'cmd:git push --force']);
+    check('splits file: entries into files', r.files.sort().join(',') === '*.pem,.env', JSON.stringify(r));
+    check('splits cmd: entries into commands',
+      r.commands.sort().join(',') === 'git push --force,rm -rf', JSON.stringify(r));
+    check('an empty list splits into two empty arrays',
+      splitTaggedRules([]).files.length === 0 && splitTaggedRules([]).commands.length === 0);
+  }
+
+  // Dismissal is applied by the orchestration layer (findGuardGaps, HOME-
+  // dependent, not unit tested here) by comparing each gap's `key` against
+  // what was last dismissed for that project - so the key only has to be
+  // stable per missing-rule-set and change when the missing set does.
+  {
+    const key = (rulesByDir) => computeGaps(rulesByDir).find((g) => g.dir === '/a').key;
+    const k1 = key(new Map([['/a', new Set()], ['/b', new Set(['.env', 'rm -rf'])]]));
+    const k1reordered = key(new Map([['/a', new Set()], ['/b', new Set(['rm -rf', '.env'])]]));
+    const k2 = key(new Map([['/a', new Set()], ['/b', new Set(['.env', 'rm -rf', 'DROP TABLE'])]]));
+    check('dismiss key is stable regardless of rule insertion order', k1 === k1reordered, `${k1} vs ${k1reordered}`);
+    check('dismiss key changes when the missing-rule set changes', k1 !== k2, `${k1} vs ${k2}`);
+  }
+}
+
 /* ------------------------------------------------------------------ mcp */
 group('mcp (isolated ~/.claude.json)');
 {

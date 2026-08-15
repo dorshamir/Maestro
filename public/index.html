@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maestro · Claude Code</title>
+<link rel="icon" href="/assets/maestro.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/assets/maestro.ico" sizes="any">
+<meta name="theme-color" content="#16151A">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div id="crash" role="alert"></div>
+
+<header>
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M3 17c3.5 0 3.5-10 7-10s3.5 10 7 10 3.5-4 4-4" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" fill="none"/>
+      <circle cx="19.5" cy="6" r="2.2" fill="currentColor"/>
+    </svg>
+    Maestro <small>conduct Claude Code</small>
+  </div>
+  <div class="annunciators" id="ann"></div>
+  <!-- Launched from a launcher there is no console to Ctrl+C. Closing the window
+       stops the server too (see presence.js); this is the deliberate way, and it
+       does not wait out the grace period. Hidden unless a launcher started us. -->
+  <button class="btn sm ghost hidden" id="quit" title="Stop the Maestro server now and close this window">Quit</button>
+</header>
+
+<nav role="tablist" aria-label="Sections">
+  <button role="tab" id="tab-sessions" data-view="sessions" aria-controls="view-sessions" aria-selected="true" tabindex="0" title="Browse and resume past Claude Code sessions, grouped by project folder">Sessions</button>
+  <button role="tab" id="tab-settings" data-view="settings" aria-controls="view-settings" aria-selected="false" tabindex="-1" title="Edit settings.json across User, Project, and Local scopes">Settings</button>
+  <button role="tab" id="tab-guard" data-view="guard" aria-controls="view-guard" aria-selected="false" tabindex="-1" title="Hard-block files and commands with a PreToolUse hook - enforced in every permission mode, including bypass">Guardrails</button>
+  <button role="tab" id="tab-lib" data-view="lib" aria-controls="view-lib" aria-selected="false" tabindex="-1" title="Manage slash commands, skills, and agents">Library</button>
+  <button role="tab" id="tab-mcp" data-view="mcp" aria-controls="view-mcp" aria-selected="false" tabindex="-1" title="MCP servers across user, project (.mcp.json) and local scopes, and whether each is approved to start">MCP</button>
+  <button role="tab" id="tab-files" data-view="files" aria-controls="view-files" aria-selected="false" tabindex="-1" title="Browse and edit files under ~/.claude or a project's .claude folder">Files</button>
+  <button role="tab" id="tab-effective" data-view="effective" aria-controls="view-effective" aria-selected="false" tabindex="-1" title="See the final merged settings.json Claude Code actually uses, after User, Project, and Local scopes combine">Effective config</button>
+</nav>
+
+<main>
+  <!-- ============================ SESSIONS ============================ -->
+  <section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions">
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Filter by prompt, summary, file touched, folder, branch, session id…">
+      <button class="btn" id="deep-btn" title="Grep the conversations themselves, not just the session metadata the filter box matches">Search inside</button>
+      <select id="sort-mode" aria-label="Sort sessions within each folder" title="Order sessions within each folder">
+        <option value="recent">Sort: most recent</option>
+        <option value="cost">Sort: most expensive</option>
+        <option value="tokens">Sort: most tokens</option>
+        <option value="name">Sort: name (A–Z)</option>
+      </select>
+      <label style="display:flex;gap:7px;align-items:center;font:12px var(--sans);color:var(--dim);min-height:44px">
+        <input type="checkbox" id="show-archived"> show archived
+      </label>
+      <button class="btn" id="fold-all" title="Expand or collapse every folder at once">Expand all</button>
+      <button class="btn" id="refresh">Rescan</button>
+      <button class="btn" id="import-btn" title="Load a session a teammate shared">Import session</button>
+      <input type="file" id="import-file" accept=".gz,.json" hidden>
+    </div>
+    <div class="toolbar" style="gap:8px;border:1px solid var(--line);border-radius:var(--r);padding:10px;background:var(--panel)">
+      <span class="badge" style="border:none;color:var(--faint)">Launch with</span>
+      <select id="lx-mode" aria-label="Permission mode for launched sessions">
+        <option value="">Permissions: leave as configured</option>
+        <option value="plan">Plan - read-only, proposes before changing anything</option>
+        <option value="default">Default - asks before anything not allow-listed</option>
+        <option value="acceptEdits">Accept edits - file edits pre-approved, shell still asks</option>
+        <option value="auto">Auto - a classifier decides what needs asking</option>
+      </select>
+      <select id="lx-model" aria-label="Model for launched sessions">
+        <option value="">Model: leave as configured</option>
+        <option value="opus">Opus</option>
+        <option value="sonnet">Sonnet</option>
+        <option value="haiku">Haiku</option>
+      </select>
+      <input id="lx-flags" aria-label="Extra command-line flags" placeholder="extra flags, e.g. --add-dir ../shared" style="flex:1;min-width:170px">
+      <label style="display:flex;gap:7px;align-items:center;font:12px var(--sans);color:var(--dim);min-height:44px">
+        <input type="checkbox" id="lx-tab" checked> open as tab
+      </label>
+      <span id="lx-count" class="badge" style="color:var(--brass);border-color:var(--brass)"></span>
+      <button class="btn amber" id="lx-go" disabled>Open selected</button>
+      <p class="scope-note" style="width:100%;margin:2px 0 0">These apply to every session you open from this tab. Permission mode controls how much Claude does without stopping to ask - <b>Plan</b> reviews without touching files; <b>Accept edits</b> skips edit prompts but still gates shell commands. Leave both unset to use whatever the project's settings.json already says.</p>
+    </div>
+    <div class="tabstrip" id="stabs"></div>
+    <div id="transcript" class="hidden"></div>
+    <div id="usage" class="hidden"></div>
+    <div id="searchres" class="hidden"></div>
+    <div id="sessions"></div>
+  </section>
+
+  <!-- ============================ SETTINGS ============================ -->
+  <section id="view-settings" role="tabpanel" aria-labelledby="tab-settings" class="hidden">
+    <div class="toolbar">
+      <div class="scope-rail" id="scopes">
+        <button data-scope="user" class="on">User</button>
+        <button data-scope="project">Project</button>
+        <button data-scope="local">Local</button>
+      </div>
+      <select id="projsel" class="hidden" style="max-width:420px"></select>
+      <div class="subtabs">
+        <button id="tab-form" class="on">Form</button>
+        <button id="tab-raw">Raw JSON</button>
+      </div>
+    </div>
+    <div class="scope-note" id="scope-note"></div>
+
+    <div id="form-editor">
+      <div class="card">
+        <h3>Permissions <span class="spacer" style="margin-left:auto"></span>
+          <button class="btn sm ghost" id="preset-safety" title="Adds common deny rules: destructive commands and secret files">+ safety pack</button>
+        </h3>
+        <div class="bd">
+          <div class="permcols">
+            <div class="permcol allow"><h4>allow</h4><div id="rules-allow"></div></div>
+            <div class="permcol ask"><h4>ask</h4><div id="rules-ask"></div></div>
+            <div class="permcol deny"><h4>deny</h4><div id="rules-deny"></div></div>
+          </div>
+          <div class="addrow">
+            <select id="rule-tool">
+              <option>Bash</option><option>Read</option><option>Edit</option><option>Write</option>
+              <option>Glob</option><option>Grep</option><option>WebFetch</option><option>WebSearch</option>
+              <option>Task</option><option value="">custom / mcp__…</option>
+            </select>
+            <input id="rule-spec" placeholder="specifier, e.g. npm run test *  or  ./.env  (empty = whole tool)">
+            <select id="rule-list"><option value="allow">→ allow</option><option value="ask">→ ask</option><option value="deny">→ deny</option></select>
+            <button class="btn sm" id="rule-add">Add rule</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Hooks <span id="hook-othercount" class="badge" style="font-weight:400"></span></h3>
+        <div class="bd">
+          <div id="hooks-list"></div>
+          <div class="addrow" style="flex-wrap:wrap">
+            <select id="hook-event">
+              <option>PreToolUse</option><option>PostToolUse</option><option>UserPromptSubmit</option>
+              <option>Notification</option><option>Stop</option><option>SubagentStop</option>
+              <option>PreCompact</option><option>SessionStart</option><option>SessionEnd</option><option>ConfigChange</option>
+            </select>
+            <select id="hook-type" aria-label="Hook type">
+              <option value="command">command</option>
+              <option value="http">http</option>
+            </select>
+            <input id="hook-matcher" placeholder="matcher, e.g. Bash or Edit|Write" style="max-width:250px">
+            <input id="hook-cmd" placeholder='command, e.g. python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/check.py"'>
+            <input id="hook-url" class="hidden" placeholder="https://hooks.example.com/claude">
+            <input id="hook-timeout" type="number" placeholder="timeout s" style="width:90px">
+            <button class="btn sm amber" id="hook-add">Add hook</button>
+            <button class="btn sm ghost hidden" id="hook-cancel">Cancel edit</button>
+          </div>
+          <div class="scope-note" id="hook-help" style="margin:8px 0 0"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Defined in this file <span id="defcount" class="badge" style="margin-left:auto"></span></h3>
+        <div class="bd" id="defkeys"></div>
+      </div>
+
+      <div class="card">
+        <h3>Add a setting - full catalog</h3>
+        <div class="bd">
+          <input type="search" id="catq" placeholder="Search 40+ settings: status line, model, memory, compact, mcp, updates…" style="width:100%;margin-bottom:10px">
+          <div id="catalog" style="max-height:340px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="raw-editor" class="hidden">
+      <textarea class="raw" id="raw" spellcheck="false"></textarea>
+      <div class="scope-note"><button class="btn sm ghost" id="add-schema">+ add $schema line (editor autocomplete)</button></div>
+    </div>
+
+    <div class="savebar">
+      <span class="file" id="settings-file"></span>
+      <span id="dirty" class="badge hidden" style="color:var(--amber);border-color:var(--amber)">unsaved</span>
+      <select id="settings-backups" style="max-width:180px" title="Restore an earlier saved version"></select>
+      <button class="btn" id="reload-settings">Discard</button>
+      <button class="btn amber" id="save-settings">Save file</button>
+    </div>
+  </section>
+
+  <!-- ============================ GUARDRAILS ============================ -->
+  <section id="view-guard" role="tabpanel" aria-labelledby="tab-guard" class="hidden">
+    <div class="card" id="g-explainer" style="margin-bottom:16px">
+      <h3>What this tab does</h3>
+      <div class="bd">
+        <p style="margin:0 0 var(--sp-2)">A <b>guardrail</b> is a hard block on a file or a command, enforced by a
+          generated script rather than a plain permission rule. Both a permission <b>deny</b> rule and this hook
+          block in every permission mode, including <code>bypassPermissions</code> - Claude Code checks deny rules
+          and hooks before it even looks at the mode. What a plain deny rule does <i>not</i> cover: <code>Grep</code>
+          and <code>Glob</code> against a guarded path (a deny rule on <code>Read</code> leaves both wide open), and a
+          Bash command that mentions the guarded file or token anywhere but the exact matched form. This hook checks
+          all of that, and Claude is only told "no" and why.</p>
+        <ol style="margin:0;padding-left:1.2em;color:var(--dim);font:13px var(--sans)">
+          <li>List the files and commands to block below (or use the starter set)</li>
+          <li>Press <b>Apply guardrails</b> - this writes the hook once, and edits after that just update its list instantly</li>
+          <li>It enforces silently, in every permission mode including bypass</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="scope-rail" id="gscopes">
+        <button data-scope="user" class="on">User</button>
+        <button data-scope="project">Project</button>
+        <button data-scope="local">Local</button>
+      </div>
+      <select id="gprojsel" class="hidden" style="max-width:420px"></select>
+    </div>
+
+    <div class="card hidden" id="g-empty-cta" style="margin-bottom:16px;border-color:var(--brass)">
+      <h3>Nothing blocked yet at this scope</h3>
+      <div class="bd">
+        <p style="margin:0 0 var(--sp-3)">Most people start with the same handful of rules: secret files, and the
+          commands that do the most damage if they run by accident.</p>
+        <button class="btn amber" id="g-starter">+ Add common guardrails</button>
+      </div>
+    </div>
+
+    <div class="permcols" style="margin-bottom:16px">
+      <div class="card" style="margin-bottom:0">
+        <h3>Blocked files / paths</h3>
+        <div class="bd">
+          <div id="gfiles"></div>
+          <div class="addrow">
+            <input id="gfile-in" placeholder=".env  ·  secrets/**  ·  *.pem  ·  appsettings.Production.json">
+            <button class="btn sm" id="gfile-add">Block file</button>
+          </div>
+          <div class="scope-note" style="margin:8px 0 0">Blocks Read / Edit / Write on matching paths, and any Bash command that mentions the file name.</div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <h3>Blocked commands</h3>
+        <div class="bd">
+          <div id="gcmds"></div>
+          <div class="addrow">
+            <input id="gcmd-in" placeholder="rm -rf  ·  git push --force  ·  DROP TABLE  ·  robocopy /MIR">
+            <button class="btn sm" id="gcmd-add">Block command</button>
+          </div>
+          <div class="scope-note" style="margin:8px 0 0">Matches the token <b>anywhere</b> in the command line - catches <code>cd x &amp;&amp; rm -rf .</code>, unlike prefix-matched deny rules.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="gcov-card" style="margin-bottom:16px">
+      <h3>Coverage across your projects</h3>
+      <div class="bd">
+        <p class="scope-note" style="margin:0 0 var(--sp-3)">Projects whose guardrails are missing something a sibling
+          project already blocks - checked across every project Maestro knows about, not just the one selected above.</p>
+        <div id="gcov-results"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h3>Close calls <span style="margin-left:auto"></span><button class="btn sm ghost" id="gnm-scan">Scan history</button></h3>
+      <div class="bd">
+        <p class="scope-note" style="margin:0 0 var(--sp-3)">Looks back through past sessions here for dangerous
+          commands or file touches that ran without being blocked - something that actually almost happened, not a
+          hypothetical. Nothing is added until you press <b>Add rule</b> below and then Apply.</p>
+        <div id="gnm-results"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h3>Test a rule</h3>
+      <div class="bd">
+        <p class="scope-note" style="margin:0 0 var(--sp-3)">Checks the rules listed above as they stand right now -
+          you do not need to press Apply first.</p>
+        <div class="permcols">
+          <div class="addrow" style="margin:0">
+            <input id="gtest-file" placeholder="a file path, e.g. /home/me/project/.env">
+            <button class="btn sm" id="gtest-file-btn">Test path</button>
+          </div>
+          <div class="addrow" style="margin:0">
+            <input id="gtest-cmd" placeholder="a command, e.g. rm -rf build">
+            <button class="btn sm" id="gtest-cmd-btn">Test command</button>
+          </div>
+        </div>
+        <div id="gtest-result" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Enforcement</h3>
+      <div class="bd">
+        <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px;font:13px var(--sans)">
+          <input type="checkbox" id="gmirror" checked style="width:auto"> Also mirror as permission <b>deny</b> rules (defense in depth, visible in /permissions)
+        </label>
+        <label style="display:flex;gap:8px;align-items:center;margin-bottom:12px;font:13px var(--sans)">
+          <input type="checkbox" id="gbypass" style="width:auto"> Forbid <b>bypassPermissions</b> mode entirely (permissions.disableBypassPermissionsMode)
+        </label>
+        <table class="eff" style="margin-bottom:12px">
+          <tr><td style="color:var(--dim)">layer \ tool</td><td>Read / Edit / Write</td><td>Grep / Glob on the path</td><td>Bash mentioning it, any form</td></tr>
+          <tr><td>deny rule</td><td style="color:var(--ok)">blocks</td><td style="color:var(--danger)">not checked</td><td style="color:var(--danger)">exact pattern only</td></tr>
+          <tr><td>Maestro hook</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks anywhere in the line</td></tr>
+        </table>
+        <div class="layerline" id="gstatus"></div>
+      </div>
+    </div>
+
+    <div class="savebar">
+      <span class="file" id="gfile-path"></span>
+      <button class="btn amber" id="gapply">Apply guardrails</button>
+    </div>
+  </section>
+
+  <!-- ============================ LIBRARY ============================ -->
+  <section id="view-lib" role="tabpanel" aria-labelledby="tab-lib" class="hidden">
+    <div class="toolbar">
+      <div class="scope-rail" id="lkinds">
+        <button data-kind="commands" class="on">Commands</button>
+        <button data-kind="skills">Skills</button>
+        <button data-kind="agents">Agents</button>
+      </div>
+      <div class="scope-rail" id="lscopes">
+        <button data-scope="user" class="on">User</button>
+        <button data-scope="project">Project</button>
+      </div>
+      <select id="lprojsel" class="hidden" style="max-width:360px"></select>
+    </div>
+    <div class="scope-note" id="lib-note"></div>
+
+    <div style="display:grid;grid-template-columns:minmax(240px,340px) 1fr;gap:14px" id="lib-grid">
+      <div class="card" style="margin-bottom:0">
+        <h3>Files <span style="margin-left:auto"></span><button class="btn sm amber" id="lib-new">+ New</button></h3>
+        <div class="bd" id="lib-list" style="max-height:520px;overflow:auto"></div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <h3><span id="lib-current">nothing open</span>
+          <span style="margin-left:auto"></span>
+          <select id="lib-backups" style="max-width:160px" title="Restore an earlier saved version"></select>
+          <button class="btn sm danger" id="lib-del">Delete</button>
+          <button class="btn sm amber" id="lib-save">Save</button>
+        </h3>
+        <div class="bd">
+          <textarea class="raw" id="lib-edit" spellcheck="false" placeholder="Pick a file on the left, or press + New."></textarea>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== MCP ============================== -->
+  <section id="view-mcp" role="tabpanel" aria-labelledby="tab-mcp" class="hidden">
+    <div class="toolbar">
+      <select id="mprojsel" style="max-width:420px"></select>
+      <button class="btn" id="mcp-reload">Reload</button>
+    </div>
+    <p class="scope-note">MCP servers give Claude Code extra tools. <b>User</b> servers load in every
+      project and live in <code>~/.claude.json</code>. <b>Project</b> servers live in the repo's
+      <code>.mcp.json</code>, so they are shared with anyone who clones it - and Claude Code will not
+      start one until it has been approved for that project, which is the state shown on each row.
+      <b>Local</b> servers are yours alone on this machine. Choose a project above to see the last two.
+      Adding a server arranges for a command to run the next time Claude Code starts, so treat it
+      with the same care as a hook.</p>
+    <div id="mcplist"></div>
+
+    <div class="card">
+      <h3>Add or replace a server</h3>
+      <div class="bd">
+        <div class="toolbar" style="padding:0;margin-bottom:10px">
+          <select id="mcp-scope" aria-label="Scope for the new server">
+            <option value="user">User - every project</option>
+            <option value="project">Project - .mcp.json, shared with the repo</option>
+            <option value="local">Local - this project, this machine only</option>
+          </select>
+          <input id="mcp-name" placeholder="server name, e.g. context7" style="max-width:220px">
+          <select id="mcp-kind" aria-label="Transport">
+            <option value="stdio">stdio - run a command</option>
+            <option value="http">http</option>
+            <option value="sse">sse</option>
+          </select>
+        </div>
+        <div id="mcp-stdio-fields">
+          <input id="mcp-cmd" placeholder="command, e.g. npx" style="width:100%;margin-bottom:8px">
+          <input id="mcp-args" placeholder="arguments, space separated - e.g. -y @upstash/context7-mcp" style="width:100%;margin-bottom:8px">
+        </div>
+        <input id="mcp-url" class="hidden" placeholder="https://example.com/mcp" style="width:100%;margin-bottom:8px">
+        <input id="mcp-env" placeholder="env, KEY=value KEY2=value2 (optional)" style="width:100%;margin-bottom:8px">
+        <p class="scope-note" style="margin:0 0 10px">An existing server of the same name in the same scope is replaced. A copy of the file is kept alongside it before anything is written.</p>
+        <button class="btn amber" id="mcp-add">Save server</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ FILES ============================ -->
+  <section id="view-files" role="tabpanel" aria-labelledby="tab-files" class="hidden">
+    <div class="toolbar">
+      <div class="scope-rail" id="fscopes">
+        <button data-scope="user" class="on">User ~/.claude</button>
+        <button data-scope="project">Project</button>
+      </div>
+      <select id="fprojsel" class="hidden" style="max-width:360px"></select>
+    </div>
+    <div class="scope-note" id="files-note"></div>
+    <div style="display:grid;grid-template-columns:minmax(240px,360px) 1fr;gap:14px" id="files-grid">
+      <div class="card" style="margin-bottom:0">
+        <h3>Tree <span style="margin-left:auto"></span><button class="btn sm ghost" id="f-expand">expand all</button><button class="btn sm ghost" id="f-refresh">refresh</button></h3>
+        <div class="bd ftree" id="ftree"></div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <h3><span id="f-current" style="font:600 11px var(--mono);text-transform:none;letter-spacing:0">nothing open</span>
+          <span style="margin-left:auto"></span>
+          <select id="f-backups" style="max-width:160px" title="Restore an earlier saved version"></select>
+          <button class="btn sm amber" id="f-save">Save</button>
+        </h3>
+        <div class="bd"><textarea class="raw" id="f-edit" spellcheck="false" placeholder="Pick a text file on the left. Binary files and anything over 1 MB open in your editor instead."></textarea></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ EFFECTIVE ============================ -->
+  <section id="view-effective" role="tabpanel" aria-labelledby="tab-effective" class="hidden">
+    <div class="toolbar">
+      <select id="effsel" style="max-width:460px"></select>
+      <span class="scope-note" style="margin:0">merge order: <span class="chip user">user</span>→<span class="chip project">project</span>→<span class="chip local">local</span> (local wins scalars, permission rules merge)</span>
+    </div>
+    <div id="effout"></div>
+  </section>
+</main>
+
+<div id="toasts" role="status" aria-live="polite"></div>
+
+
+<script src="/js/core.js"></script>
+<script src="/js/sessions.js"></script>
+<script src="/js/transcripts.js"></script>
+<script src="/js/settings.js"></script>
+<script src="/js/guardrails.js"></script>
+<script src="/js/library.js"></script>
+<script src="/js/files.js"></script>
+<script src="/js/mcp.js"></script>
+<script src="/js/boot.js"></script>
+</body>
+</html>

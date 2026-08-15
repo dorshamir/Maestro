@@ -724,6 +724,92 @@ group('cross-project guardrail gap detector');
   }
 }
 
+/* ------------------------------------------------ cost regression detector */
+group('cost regression / model-drift detector');
+{
+  const { dailyCost, detectRegression } = require('./lib/cost-analysis');
+  const { dayKey } = require('./lib/digests');
+
+  // dailyCost: sums each transcript's own byDay, same shape digests.js
+  // already computes - testable directly with temp files, no HOME isolation
+  // needed, same as the existing "spend attribution" and "token counting"
+  // tests: getDigest() computes fresh from the file when it is not already
+  // cached, and never writes the cache back to disk on its own.
+  {
+    const usage = (n) => ({ input_tokens: n, output_tokens: n, cache_read_input_tokens: 0 });
+    const line = (ts, id, model, n) => JSON.stringify({
+      type: 'assistant', requestId: id, timestamp: ts,
+      message: { id, model, usage: usage(n), content: [{ type: 'text' }] },
+    });
+    const f1 = path.join(os.tmpdir(), 'maestro-cost-a-' + process.pid + '.jsonl');
+    const f2 = path.join(os.tmpdir(), 'maestro-cost-b-' + process.pid + '.jsonl');
+    fs.writeFileSync(f1, [line('2026-03-01T10:00:00Z', 'r1', 'claude-haiku', 1000)].join('\n') + '\n');
+    fs.writeFileSync(f2, [line('2026-03-01T11:00:00Z', 'r2', 'claude-haiku', 2000)].join('\n') + '\n');
+    try {
+      const byDay = dailyCost([f1, f2]);
+      check('sums cost across multiple session files onto the same day',
+        Object.keys(byDay).length === 1 && byDay['2026-03-01'].usd > 0, JSON.stringify(byDay));
+      check('carries per-model cost within the day (for the drift annotation)',
+        byDay['2026-03-01'].models['claude-haiku'] > 0, JSON.stringify(byDay));
+      check('a file that fails to parse contributes nothing rather than throwing',
+        Object.keys(dailyCost([f1, '/does/not/exist.jsonl'])).length === 1);
+    } finally {
+      try { fs.unlinkSync(f1); fs.unlinkSync(f2); } catch { /* best effort */ }
+    }
+  }
+
+  // detectRegression: pure, deterministic - `today` is passed in rather than
+  // read from the clock.
+  {
+    const mk = (usd, models) => ({ usd, models });
+    const dayBack = (today, n) => { const [y, m, d] = today.split('-').map(Number); return dayKey(new Date(y, m - 1, d - n).getTime()); };
+    const TODAY = '2026-03-15';
+
+    // Flat spend for 14 days: no regression.
+    {
+      const byDay = {};
+      for (let i = 0; i < 14; i++) byDay[dayBack(TODAY, i)] = mk(1, { 'claude-sonnet': 1 });
+      check('flat spend across the window is not flagged',
+        detectRegression(byDay, TODAY, 14) === null, JSON.stringify(detectRegression(byDay, TODAY, 14)));
+    }
+
+    // Prior week cheap on Haiku, trailing week expensive on Opus: the
+    // exact "sessions quietly started running a pricier model" scenario.
+    {
+      const byDay = {};
+      for (let i = 7; i < 14; i++) byDay[dayBack(TODAY, i)] = mk(1, { 'claude-haiku': 1 });
+      for (let i = 0; i < 7; i++) byDay[dayBack(TODAY, i)] = mk(5, { 'claude-opus': 5 });
+      const r = detectRegression(byDay, TODAY, 14);
+      check('flags a real trailing-vs-prior jump', r !== null, JSON.stringify(r));
+      check('reports the ratio', r && r.ratio > 3, JSON.stringify(r));
+      check('names the model that got pricier (trailing window)', r && r.trailingTopModel === 'claude-opus', JSON.stringify(r));
+      check('names what it was before (prior window)', r && r.priorTopModel === 'claude-haiku', JSON.stringify(r));
+    }
+
+    // Minimum-sample floor: the same jump shape, but too few sessions total
+    // to trust it - Fable's own objection to a cheap changepoint detector.
+    {
+      const byDay = {};
+      for (let i = 7; i < 14; i++) byDay[dayBack(TODAY, i)] = mk(1, { 'claude-haiku': 1 });
+      for (let i = 0; i < 7; i++) byDay[dayBack(TODAY, i)] = mk(5, { 'claude-opus': 5 });
+      check('below the minimum-sample floor, does not flag even a real-looking jump',
+        detectRegression(byDay, TODAY, 2) === null);
+    }
+
+    // No prior-window spend at all: this is new spending, not a "jump" -
+    // there is nothing to jump from.
+    {
+      const byDay = {};
+      for (let i = 0; i < 7; i++) byDay[dayBack(TODAY, i)] = mk(5, { 'claude-opus': 5 });
+      check('a prior window with zero spend is not treated as a regression',
+        detectRegression(byDay, TODAY, 14) === null);
+    }
+
+    check('an empty day map with enough sessions is not flagged',
+      detectRegression({}, TODAY, 14) === null);
+  }
+}
+
 /* ------------------------------------------------------------------ mcp */
 group('mcp (isolated ~/.claude.json)');
 {

@@ -43,6 +43,9 @@ async function loadSessions() {
     spend.querySelector('.sub').textContent = j.summary.last30.sessions + ' sessions';
   }
   renderUsage();
+  // Separate, slightly slower request - never blocks the list above from
+  // showing up first.
+  api('/api/cost-regressions').then((r) => { S.costRegressions = r.regressions; renderUsage(); }).catch(() => {});
   renderSessions();
 }
 
@@ -196,6 +199,15 @@ function renderUsage() {
     <div class="u-row"><span class="l" title="${esc(p.cwd)}">${esc(p.cwd.replace(/^.*[\\/]/, '') || p.cwd)}</span>
       <span class="r">${usd(p.usd)}</span></div>`).join('');
   const spark = renderSpark(s.daily);
+  const regs = S.costRegressions || [];
+  const regressions = regs.length ? `
+    <h4 style="font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint);margin:0 0 var(--sp-2)">Cost jumps</h4>
+    ${regs.map((r) => `
+      <div class="u-row"><span class="l" title="${esc(r.cwd)}">${esc(r.cwd.replace(/^.*[\\/]/, '') || r.cwd)}
+          <span class="m">${esc(r.priorTopModel || '?')} → ${esc(r.trailingTopModel || '?')}</span></span>
+        <span class="r" style="color:var(--danger)">${usd(r.trailingUsd)} <span class="m">(${r.ratio.toFixed(1)}×)</span></span></div>`).join('')}
+    <p class="scope-note" style="margin:var(--sp-2) 0 0">Last 7 days vs the 7 before that, folders with at least a
+      few priced sessions only - a quiet model-mix change can be as much of a cost driver as more usage.</p>` : '';
 
   box.innerHTML = `
     <div class="u-head" id="u-toggle" role="button" tabindex="0" aria-expanded="${box.classList.contains('open')}">
@@ -208,7 +220,8 @@ function renderUsage() {
     </div>
     <div class="u-body">
       ${spark}
-      <h4 style="font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint);margin:${spark ? 'var(--sp-4)' : '0'} 0 var(--sp-2)">Cost by model</h4>
+      ${regressions}
+      <h4 style="font:600 9px/1.4 var(--sans);letter-spacing:1.3px;text-transform:uppercase;color:var(--faint);margin:${spark || regressions ? 'var(--sp-4)' : '0'} 0 var(--sp-2)">Cost by model</h4>
       ${models || '<p class="scope-note">No model usage recorded.</p>'}
       <div class="u-grid">
         <div>

@@ -810,6 +810,48 @@ group('cost regression / model-drift detector');
   }
 }
 
+/* ------------------------------------------------ session to playbook */
+group('session -> Library playbook extraction');
+{
+  const { extractPlaybook, playbookMarkdown } = require('./lib/library');
+
+  const toolUse = (name, input) => JSON.stringify({
+    type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] },
+  });
+  const raw = [
+    toolUse('Bash', { command: 'npm install' }),
+    toolUse('Write', { file_path: '/repo/src/app.js' }),
+    toolUse('Edit', { file_path: '/repo/src/app.js' }),   // consecutive dup on the same file - collapse
+    toolUse('Bash', { command: 'npm test' }),
+    toolUse('Bash', { command: 'npm test' }),              // consecutive dup command - collapse
+    toolUse('Edit', { file_path: '/repo/src/util.js' }),
+    toolUse('Read', { file_path: '/repo/README.md' }),     // reads are not a "step" - not a playbook action
+    JSON.stringify({ type: 'user', message: { content: 'hi' } }), // must not throw
+    'not even json',                                       // must not throw
+  ].join('\n') + '\n';
+
+  const steps = extractPlaybook(raw);
+  check('records a command step', steps.some((s) => s.kind === 'command' && s.text === 'npm install'), JSON.stringify(steps));
+  check('records a file step', steps.some((s) => s.kind === 'file' && s.text === '/repo/src/app.js'), JSON.stringify(steps));
+  check('collapses a consecutive duplicate file edit into one step',
+    steps.filter((s) => s.kind === 'file' && s.text === '/repo/src/app.js').length === 1, JSON.stringify(steps));
+  check('collapses a consecutive duplicate command into one step',
+    steps.filter((s) => s.kind === 'command' && s.text === 'npm test').length === 1, JSON.stringify(steps));
+  check('preserves step order', steps.map((s) => s.text).indexOf('npm install') < steps.map((s) => s.text).indexOf('/repo/src/util.js'), JSON.stringify(steps));
+  check('a plain Read is not recorded as a playbook step', !steps.some((s) => s.text === '/repo/README.md'), JSON.stringify(steps));
+  check('malformed/non-assistant lines do not throw', Array.isArray(steps));
+
+  check('empty transcript content yields an empty step list', extractPlaybook('').length === 0);
+
+  const md = playbookMarkdown(steps, { title: 'My Session' });
+  check('markdown includes the title', md.includes('My Session'));
+  check('markdown numbers the steps in order', /1\..*npm install[\s\S]*2\..*app\.js/.test(md), md);
+  check('markdown is honest about not being an AI-generalized skill',
+    /not.*AI-generalized|literal record/i.test(md), md);
+  const emptyMd = playbookMarkdown([], { title: 'Nothing' });
+  check('an empty step list still produces valid, non-crashing markdown', typeof emptyMd === 'string' && emptyMd.length > 0);
+}
+
 /* ------------------------------------------------------------------ mcp */
 group('mcp (isolated ~/.claude.json)');
 {

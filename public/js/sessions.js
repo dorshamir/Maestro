@@ -353,6 +353,7 @@ function renderSessions() {
           <button class="btn sm ghost" data-rename="${esc(s.id)}" data-curname="${esc(s.namedByUser ? s.name : '')}" title="Rename this session">rename</button>
           <button class="btn sm ghost" data-archive="${esc(s.id)}" data-archived="${s.archived ? '1' : ''}" title="${s.archived ? 'Unarchive' : 'Archive - hides it from the list without deleting anything'}">${s.archived ? 'unarchive' : 'archive'}</button>
           <button class="btn sm ghost" data-share="${esc(s.file)}" title="Share this session with a teammate">share</button>
+          <button class="btn sm ghost" data-playbook="${esc(s.file)}" title="Extract this session's commands and file edits, in order, as a Library command draft to review">→ playbook</button>
           <button class="btn sm ghost" data-copy="${esc(s.id)}" title="Copy resume command">copy cmd</button>
         </div>`).join('')}
       ` : ''}
@@ -431,6 +432,8 @@ $('#sessions').addEventListener('click', async (e) => {
     openTab(b.dataset.viewt, b.dataset.title);
   } else if (b.dataset.share !== undefined) {
     shareSession(b.dataset.share);
+  } else if (b.dataset.playbook !== undefined) {
+    extractToLibrary(b.dataset.playbook);
   } else if (b.dataset.copy !== undefined) {
     navigator.clipboard.writeText(`claude --resume ${b.dataset.copy}`);
     toast('Command copied', '', `claude --resume ${b.dataset.copy}`);
@@ -557,6 +560,26 @@ $('#searchres').addEventListener('click', (e) => {
 });
 
 /* --------------------------------------------------------------- sharing */
+// Opens the Library tab with a draft command pre-filled from a session's own
+// tool-call sequence - not saved yet, so the user reviews/edits before the
+// existing Save button (same one "+ New" uses) actually writes it to disk.
+async function extractToLibrary(file) {
+  let j;
+  try { j = await api('/api/session-playbook?file=' + encodeURIComponent(file)); }
+  catch (err) { return toast(err.message, 'err'); }
+  if (L.dirty && !confirm('Discard unsaved Library edits to load this playbook?')) return;
+  L.kind = 'commands'; L.scope = 'user'; L.dir = ''; L.rel = j.name + '.md'; L.dirty = true;
+  LS.set('libKind', L.kind);
+  applyLibState();
+  document.querySelectorAll('#lscopes button').forEach((x) => x.classList.toggle('on', x.dataset.scope === 'user'));
+  $('#lprojsel').classList.add('hidden');
+  $('#lib-edit').value = j.content;
+  libTitle();
+  renderBackupSelect('#lib-backups', [], null);
+  showView('lib');
+  loadLib().catch(() => {});
+  toast(j.steps ? `Drafted from ${j.steps} step(s) - review, then Save` : 'No commands or file edits found in this session', j.steps ? '' : 'err');
+}
 async function shareSession(file) {
   let info;
   try { info = await api('/api/share-check?file=' + encodeURIComponent(file)); }

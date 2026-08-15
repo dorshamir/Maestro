@@ -137,8 +137,10 @@ them directly instead of evaluating the server):
 | `lib/transcripts.js` | the viewer feed, transcript search, export capsules, import |
 | `lib/launch.js` | building the `claude` command line, opening a terminal |
 | `lib/settings.js` | `settings.json` across scopes, plus the effective merge |
-| `lib/guardrails.js` | the generated PreToolUse hook and its deny-rule mirror |
-| `lib/library.js` | commands / agents / skills as files |
+| `lib/guardrails.js` | the generated PreToolUse hook, applying/reading a project's own rules |
+| `lib/guardrail-analysis.js` | read-only guardrail analysis: the rule tester, near-miss synthesis, cross-project gaps |
+| `lib/cost-analysis.js` | per-folder cost trend / model-drift detection |
+| `lib/library.js` | commands / agents / skills as files, plus session-to-playbook extraction |
 | `lib/files.js` | the narrow file explorer over `~/.claude` |
 | `lib/mcp.js` | MCP servers across `~/.claude.json` and `.mcp.json` |
 | `lib/presence.js` | who still has the UI open, and the push channel to them |
@@ -146,6 +148,22 @@ them directly instead of evaluating the server):
 Routing is an exact-match lookup in a plain object - no pattern matching, no
 middleware stack. `server.js` awaits the handler inside one `try`/`catch`, so a
 throw anywhere below becomes a 500 with the message rather than a hung request.
+
+`lib/guardrail-analysis.js` and `lib/cost-analysis.js` are separate files
+rather than additions to the modules they extend, and that split is load-
+bearing, not stylistic: `sessions.js` already requires `digests.js`,
+`pricing.js` and `guardrails.js` for its own rollup, so a reverse
+dependency from any of those back into `sessions.js` (needed to walk every
+project's sessions) would be a circular require.
+
+The frontend follows the same one-file-per-concern shape: `public/index.html`
+holds only markup, `public/styles.css` the stylesheet, and `public/js/*.js`
+one file per view (`core.js` shared helpers first, `boot.js` nav/bootstrap
+last, everything else in between) - plain `<script src>` tags, not modules,
+so cross-file references stay simple globals and the load order that used to
+be "top to bottom in one file" is now "top to bottom across files in the
+`<script>` list." Each file needs its own `'use strict'` pragma: classic
+`<script>` tags are separate strict-mode scopes.
 
 ## Nice extras
 
@@ -273,6 +291,43 @@ Scope works like settings: **User** = enforced for you everywhere; **Project** =
 
 Known limits, stated plainly: a deliberately broad search (`Glob **/*`) can still enumerate a guarded file's existence, a `Grep` over a parent *directory* is not blocked on the strength of one guarded file inside it, and a determined agent can find encodings no static filter catches. Guardrails raise the bar hard; they don't replace managed policies for compliance-grade enforcement.
 
+The tab opens with a plain-language explainer (what a guardrail is, the three-step
+mental model) and an empty-state **+ Add common guardrails** button that fills in
+a starter set - secrets plus the handful of commands that do the most damage by
+accident - because "type a glob pattern" is a real barrier if you have never done
+it before.
+
+### Testing a rule before you trust it
+
+A **Test a rule** box runs a sample file path or command through the *actual*
+generated hook script as a subprocess, not a reimplementation of its matching
+logic - the answer can never drift from what a live session would really do.
+It tests the rules on screen, including ones you have not pressed **Apply**
+for yet, so you can sanity-check a pattern before it goes live.
+
+### Near-miss synthesis
+
+**Close calls** mines this project's transcript history for dangerous commands
+and file touches that ran *without* being blocked - a rule proposed from
+something that actually almost happened, not a hypothetical. It flags a short,
+auditable list of signatures (`rm -rf`, `git push --force`, `DROP TABLE`,
+reads of `.env`/`*.pem`/`id_rsa`/credentials files, and a few more) that are
+not already covered by whatever guardrails are in effect for that project, and
+proposes the reusable token to add (`rm -rf`, not the whole command line it
+was seen in - adding the literal line would only ever match that one command
+again). No LLM call: matching the project's no-network constraint, this stays
+a fixed pattern list rather than a fuzzy classifier.
+
+### Coverage across your projects
+
+A **Coverage** card compares every known project's own guardrails and flags
+one whose rules are a strict subset of a sibling's - most commonly, a project
+with none at all while a sibling has some. One click adds the missing rules;
+a **Not applicable** dismissal is remembered per the exact missing-rule set,
+so it does not keep re-flagging a divergence that is intentional (a project
+that genuinely has no secrets to guard), but does resurface if what is
+actually missing changes.
+
 ## Settings catalog
 
 The Settings tab now shows two things per scope: **Defined in this file** - every key present in the JSON with a type-aware editor (booleans, enums, numbers, strings, JSON objects) and one-click removal - and **Add a setting**, a searchable catalog of 45+ documented settings.json keys (statusLine, model, memory, auto-compact, MCP approval, update channel, fallback models, attribution, and more) with plain-language descriptions. Pick one, it lands in the file with a sensible example value, adjust, save. Unknown/custom keys are always preserved and editable in Raw JSON.
@@ -288,6 +343,24 @@ The CLI's slash menus are fine for *running* these, weak for *managing* them. Th
 Descriptions from frontmatter show in the list, so the team can scan what exists before creating duplicates. Saves are backed up like settings; new sessions pick files up immediately.
 
 **Why the Library can be empty on a machine where Claude Code clearly has skills.** Only file-based skills live in `~/.claude/skills` (or a project's `.claude/skills`). Skills bundled with Claude Code itself, and skills that arrive through a plugin, are not files in those folders and never appear in the Library - a machine can list a dozen skills in the CLI while both scopes here are empty, and nothing is broken. The folder Maestro is actually reading is printed under the Library's kind/scope rails, so the two can be compared directly. If that path is not the one you expect, check `CLAUDE_CONFIG_DIR`: Claude Code relocates its whole config tree when that variable is set - common on managed machines with redirected home directories - and Maestro follows it.
+
+### Turning a session into a playbook
+
+A **→ playbook** button on each session row extracts its own tool-call sequence
+- commands run and files edited, in order, consecutive repeats collapsed into
+one step - into a Library command draft. It is not saved automatically: the
+draft opens in the Library editor for review, and the same Save button `+ New`
+already uses is what actually writes it. There is no LLM call to generalize
+the sequence, so this is framed honestly as a literal record of what happened
+("review before reuse" is right there in the generated frontmatter), not a
+finished skill.
+
+### Undoing a bad save
+
+Settings, Library files and Files-tab edits already kept their last 3 backups
+on every save; a **History** dropdown on each editor now lets you actually see
+and restore one, instead of copying a `.maestro-bak.*` file by hand. Restoring
+backs up whatever was on disk first, so a restore is itself undoable.
 
 ## What Maestro deliberately is not
 
@@ -350,6 +423,15 @@ Hovering the name shows the derived activity for that session (files edited, com
 ## Usage and cost
 
 A collapsible **Usage** panel sits above the session list: the last 7 and 30 days, session counts for each, tokens in→out, cache read volume, a 30-day bar chart, a per-model cost breakdown, and the folders you spend the most in. There is deliberately **no all-time total** - it only ever grows, so it says nothing about whether this week cost more than the last one, which is the question the panel exists to answer.
+
+### Cost jumps
+
+The panel also flags a folder whose spend jumped because its sessions quietly
+started running a pricier model - trailing 7 days vs. the 7 before that, a
+60%+ jump to flag, naming the model shift (e.g. `claude-fable-5 →
+claude-opus-5`). A folder with only a couple of sessions can't trigger it
+(too little data to trust), and a prior window with zero spend is treated as
+new spending, not a "jump" - there is nothing to have jumped from.
 
 ### The 7- and 30-day windows used to be wrong too
 

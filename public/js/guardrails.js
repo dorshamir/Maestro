@@ -1,0 +1,176 @@
+'use strict';
+/* ------------------------------------------------------------ guardrails */
+const G = { scope: 'user', dir: '', files: [], commands: [] };
+// The pattern set every README example already uses for the input
+// placeholders - secrets plus the handful of commands that do the most
+// damage if they run by accident. One click for someone who does not yet
+// know what they'd type here.
+const GUARD_STARTER = {
+  files: ['.env', '.env.*', 'secrets/**', '*.pem', '*_rsa'],
+  commands: ['rm -rf', 'git push --force', 'DROP TABLE'],
+};
+function renderGuard() {
+  const chipList = (arr, attr) => arr.map((v, i) =>
+    `<div class="rule"><span style="flex:1">${esc(v)}</span><button data-${attr}="${i}" title="remove">✕</button></div>`).join('')
+    || '<div class="scope-note" style="margin:0">nothing blocked yet</div>';
+  $('#gfiles').innerHTML = chipList(G.files, 'gdf');
+  $('#gcmds').innerHTML = chipList(G.commands, 'gdc');
+  $('#g-empty-cta').classList.toggle('hidden', G.files.length > 0 || G.commands.length > 0);
+}
+async function loadGuard() {
+  if (G.scope !== 'user' && !G.dir) { $('#gfile-path').textContent = 'choose a project above'; G.files = []; G.commands = []; renderGuard(); return; }
+  const j = await api(`/api/guard?scope=${G.scope}&dir=${encodeURIComponent(G.dir)}`);
+  G.files = j.files; G.commands = j.commands;
+  $('#gmirror').checked = j.files.length || j.commands.length ? j.mirrorDeny : true;
+  $('#gbypass').checked = j.forbidBypass;
+  $('#gfile-path').textContent = `${j.settingsFile}  +  ${j.hookFile}`;
+  $('#gstatus').innerHTML = j.hookExists && j.registered
+    ? '<span class="chip project">active</span> hook installed and registered - list edits apply on next Apply, instantly to running sessions'
+    : '<span class="chip local">inactive</span> not installed yet for this scope - press Apply';
+  renderGuard();
+  loadGuardGaps();
+}
+
+// Machine-wide, not scoped to G.dir - deliberately independent of the
+// scope/project picker above, since the point is comparing across projects.
+async function loadGuardGaps() {
+  try {
+    const j = await api('/api/guard-gaps');
+    $('#gcov-card').classList.toggle('hidden', j.gaps.length === 0);
+    $('#gcov-results').innerHTML = j.gaps.map((g, i) => `
+      <div class="hook" style="align-items:center">
+        <div class="body"><b style="font:600 12px var(--mono)">${esc(g.dir)}</b>
+          <div class="m">missing ${[...g.files, ...g.commands].map(esc).join(', ')} - already blocked in ${esc(g.sibling)}</div></div>
+        <button class="btn sm ghost" data-gcov-dismiss="${i}">Not applicable</button>
+        <button class="btn sm amber" data-gcov-fix="${i}">Add missing rules</button>
+      </div>`).join('');
+    $('#gcov-results').dataset.gaps = JSON.stringify(j.gaps);
+  } catch { /* best effort - this card is a nice-to-have, not core to the tab */ }
+}
+$('#gcov-results').addEventListener('click', async (e) => {
+  const gaps = JSON.parse($('#gcov-results').dataset.gaps || '[]');
+  const dismissBtn = e.target.closest('[data-gcov-dismiss]');
+  if (dismissBtn) {
+    const g = gaps[Number(dismissBtn.dataset.gcovDismiss)]; if (!g) return;
+    try {
+      await api('/api/guard-gaps-dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dir: g.dir, key: g.key }) });
+      loadGuardGaps();
+    } catch (err) { toast(err.message, 'err'); }
+    return;
+  }
+  const fixBtn = e.target.closest('[data-gcov-fix]');
+  if (fixBtn) {
+    const g = gaps[Number(fixBtn.dataset.gcovFix)]; if (!g) return;
+    fixBtn.disabled = true;
+    try {
+      // Reuse whichever scope is already registered for that project, if
+      // either is; default to 'project' (shared, committed) for a first rule.
+      const [proj, local] = await Promise.all([
+        api(`/api/guard?scope=project&dir=${encodeURIComponent(g.dir)}`),
+        api(`/api/guard?scope=local&dir=${encodeURIComponent(g.dir)}`),
+      ]);
+      const target = local.registered ? local : proj;
+      const scope = local.registered ? 'local' : 'project';
+      const files = [...new Set([...target.files, ...g.files])];
+      const commands = [...new Set([...target.commands, ...g.commands])];
+      await api('/api/guard', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope, dir: g.dir, files, commands,
+          mirrorDeny: target.mirrorDeny !== false, forbidBypass: target.forbidBypass }) });
+      toast(`Added missing rules to ${g.dir}`);
+      if (G.dir === g.dir) loadGuard(); else loadGuardGaps();
+    } catch (err) { toast(err.message, 'err'); fixBtn.disabled = false; }
+  }
+});
+$('#gscopes').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  G.scope = b.dataset.scope;
+  document.querySelectorAll('#gscopes button').forEach((x) => x.classList.toggle('on', x === b));
+  $('#gprojsel').classList.toggle('hidden', G.scope === 'user');
+  loadGuard().catch((err) => toast(err.message, 'err'));
+});
+$('#gprojsel').addEventListener('change', () => { G.dir = $('#gprojsel').value; loadGuard().catch((err) => toast(err.message, 'err')); });
+$('#view-guard').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.gdf !== undefined) { G.files.splice(Number(b.dataset.gdf), 1); renderGuard(); }
+  else if (b.dataset.gdc !== undefined) { G.commands.splice(Number(b.dataset.gdc), 1); renderGuard(); }
+});
+const addGuardEntry = (inputSel, list) => {
+  const v = $(inputSel).value.trim();
+  if (!v) return toast('Type a pattern first', 'err');
+  if (!list.includes(v)) list.push(v);
+  $(inputSel).value = ''; renderGuard();
+};
+$('#gfile-add').addEventListener('click', () => addGuardEntry('#gfile-in', G.files));
+$('#gcmd-add').addEventListener('click', () => addGuardEntry('#gcmd-in', G.commands));
+$('#gfile-in').addEventListener('keydown', (e) => { if (e.key === 'Enter') addGuardEntry('#gfile-in', G.files); });
+$('#gcmd-in').addEventListener('keydown', (e) => { if (e.key === 'Enter') addGuardEntry('#gcmd-in', G.commands); });
+$('#g-starter').addEventListener('click', () => {
+  for (const v of GUARD_STARTER.files) if (!G.files.includes(v)) G.files.push(v);
+  for (const v of GUARD_STARTER.commands) if (!G.commands.includes(v)) G.commands.push(v);
+  renderGuard();
+  toast('Added - press Apply guardrails to make it real');
+});
+
+// Tests the rules as they stand on screen, not what is saved to disk - the
+// server takes the same draft {files, commands} PUT already sends on Apply.
+async function runGuardTest(kind, inputSel, btnSel) {
+  const value = $(inputSel).value.trim();
+  if (!value) return toast('Type something to test first', 'err');
+  const btn = $(btnSel);
+  btn.disabled = true;
+  try {
+    const r = await api('/api/guard-test', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: G.files, commands: G.commands, kind, value }) });
+    $('#gtest-result').innerHTML = r.blocked
+      ? `<span class="chip" style="color:var(--deny);border-color:var(--deny)">blocked</span> ${esc(r.reason || 'matched a rule above')}`
+      : `<span class="chip" style="color:var(--allow);border-color:var(--allow)">allowed</span> no rule above matches this`;
+  } catch (err) { toast(err.message, 'err'); }
+  finally { btn.disabled = false; }
+}
+$('#gtest-file-btn').addEventListener('click', () => runGuardTest('file', '#gtest-file', '#gtest-file-btn'));
+$('#gtest-cmd-btn').addEventListener('click', () => runGuardTest('command', '#gtest-cmd', '#gtest-cmd-btn'));
+$('#gtest-file').addEventListener('keydown', (e) => { if (e.key === 'Enter') runGuardTest('file', '#gtest-file', '#gtest-file-btn'); });
+$('#gtest-cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') runGuardTest('command', '#gtest-cmd', '#gtest-cmd-btn'); });
+
+$('#gnm-scan').addEventListener('click', async () => {
+  const btn = $('#gnm-scan');
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  $('#gnm-results').innerHTML = '';
+  try {
+    const j = await api('/api/guard-near-miss?dir=' + encodeURIComponent(G.scope === 'user' ? '' : G.dir));
+    if (!j.results.length) {
+      $('#gnm-results').innerHTML = `<div class="scope-note" style="margin:0">No close calls found across ${j.scanned} session(s)${j.partial ? ' (stopped early - there may be more)' : ''}.</div>`;
+    } else {
+      $('#gnm-results').innerHTML = j.results.map((r, i) => `
+        <div class="hook" style="align-items:center">
+          <div class="body"><b style="font:600 12px var(--mono)">${esc(r.suggest)}</b>
+            <div class="m">${esc(r.label)} - ${r.kind === 'command' ? 'ran' : 'read'} as <code>${esc(r.seen)}</code> in session ${esc(r.sessionId.slice(0, 8))}</div></div>
+          <button class="btn sm amber" data-gnm-add="${i}">Add rule</button>
+        </div>`).join('') + (j.partial ? '<div class="scope-note" style="margin:8px 0 0">Stopped early - there may be more.</div>' : '');
+      $('#gnm-results').dataset.results = JSON.stringify(j.results);
+    }
+  } catch (err) { toast(err.message, 'err'); }
+  finally { btn.disabled = false; btn.textContent = 'Scan history'; }
+});
+$('#gnm-results').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-gnm-add]'); if (!b) return;
+  const results = JSON.parse($('#gnm-results').dataset.results || '[]');
+  const r = results[Number(b.dataset.gnmAdd)]; if (!r) return;
+  const list = r.kind === 'command' ? G.commands : G.files;
+  if (!list.includes(r.suggest)) list.push(r.suggest);
+  renderGuard();
+  b.disabled = true; b.textContent = 'Added';
+  toast('Added - press Apply guardrails to make it real');
+});
+
+$('#gapply').addEventListener('click', async () => {
+  try {
+    const j = await api('/api/guard', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: G.scope, dir: G.dir, files: G.files, commands: G.commands,
+        mirrorDeny: $('#gmirror').checked, forbidBypass: $('#gbypass').checked }) });
+    toast(`Guardrails applied - hook + ${j.mirrored} mirrored deny rules`, '', j.hookFile);
+    loadGuard();
+  } catch (err) { toast(err.message, 'err'); }
+});
+

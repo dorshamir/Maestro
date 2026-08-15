@@ -137,8 +137,10 @@ them directly instead of evaluating the server):
 | `lib/transcripts.js` | the viewer feed, transcript search, export capsules, import |
 | `lib/launch.js` | building the `claude` command line, opening a terminal |
 | `lib/settings.js` | `settings.json` across scopes, plus the effective merge |
-| `lib/guardrails.js` | the generated PreToolUse hook and its deny-rule mirror |
-| `lib/library.js` | commands / agents / skills as files |
+| `lib/guardrails.js` | the generated PreToolUse hook, applying/reading a project's own rules |
+| `lib/guardrail-analysis.js` | read-only guardrail analysis: the rule tester, near-miss synthesis, cross-project gaps |
+| `lib/cost-analysis.js` | per-folder cost trend / model-drift detection |
+| `lib/library.js` | commands / agents / skills as files, plus session-to-playbook extraction |
 | `lib/files.js` | the narrow file explorer over `~/.claude` |
 | `lib/mcp.js` | MCP servers across `~/.claude.json` and `.mcp.json` |
 | `lib/presence.js` | who still has the UI open, and the push channel to them |
@@ -146,6 +148,22 @@ them directly instead of evaluating the server):
 Routing is an exact-match lookup in a plain object - no pattern matching, no
 middleware stack. `server.js` awaits the handler inside one `try`/`catch`, so a
 throw anywhere below becomes a 500 with the message rather than a hung request.
+
+`lib/guardrail-analysis.js` and `lib/cost-analysis.js` are separate files
+rather than additions to the modules they extend, and that split is load-
+bearing, not stylistic: `sessions.js` already requires `digests.js`,
+`pricing.js` and `guardrails.js` for its own rollup, so a reverse
+dependency from any of those back into `sessions.js` (needed to walk every
+project's sessions) would be a circular require.
+
+The frontend follows the same one-file-per-concern shape: `public/index.html`
+holds only markup, `public/styles.css` the stylesheet, and `public/js/*.js`
+one file per view (`core.js` shared helpers first, `boot.js` nav/bootstrap
+last, everything else in between) - plain `<script src>` tags, not modules,
+so cross-file references stay simple globals and the load order that used to
+be "top to bottom in one file" is now "top to bottom across files in the
+`<script>` list." Each file needs its own `'use strict'` pragma: classic
+`<script>` tags are separate strict-mode scopes.
 
 ## Nice extras
 
@@ -259,19 +277,57 @@ an attacker who can already create directories on your machine.
 
 ## Guardrails (hard blocks)
 
-Deny rules block silently without asking - but they're skipped entirely in `bypassPermissions` mode, and Bash deny rules are prefix-matched (`Bash(rm *)` misses `cd x && rm`). The **Guardrails** tab closes both gaps:
+Both a permission **deny** rule and a **PreToolUse hook** block in every permission mode, including `bypassPermissions` - Claude Code's own documentation states deny rules and hooks are evaluated *before* the permission mode is even consulted (`deny → ask → mode → allow`), so neither one is something bypass mode skips.
+**An earlier version of this README claimed deny rules *are* skipped in `bypassPermissions` mode. That was wrong** - confirmed against Anthropic's current permission-modes, permissions and Agent SDK permissions docs, which converge on the same evaluation order. What a plain deny rule genuinely does not cover, regardless of mode, is what the **Guardrails** tab actually closes:
 
 - Add a **file/glob** (`.env`, `secrets/**`, `*.pem`) or a **command token** (`rm -rf`, `git push --force`, `DROP TABLE`).
 - Maestro writes a generated **PreToolUse hook** (`maestro-guard.js`, Node, cross-platform) plus a `maestro-guardrails.json` blocklist it reads on every tool call. The hook exits with code 2 on a match, which the Claude Code docs define as *"blocks the tool call"* for `PreToolUse`, and feeds stderr back to Claude as the reason.
-  Hooks run ahead of the permission prompt rather than through it, which is why this catches cases a deny rule does not. **An earlier version of this README claimed the block holds in every permission mode, `bypassPermissions` included. The published hook documentation does not actually state that**, and it explicitly cautions that hooks are a policy mechanism rather than a hard allow/deny - so treat bypass-mode coverage as unverified until you test it yourself in your own setup. Use the `disableBypassPermissionsMode` switch below if you need bypass mode ruled out with certainty.
 - File rules block Read/Edit/Write/MultiEdit/NotebookEdit on matching paths, **and** `Grep`/`Glob` against them, **and** any Bash/PowerShell command that mentions the file name (`cat .env | grep KEY` → blocked). Command rules match the token anywhere in the command line, across chains, pipes, quotes and redirections.
-- `Grep` and `Glob` were the real hole here: `Grep` with `output_mode: "content"` prints the matching lines of a file it was never allowed to `Read`, and `Glob` confirms a guarded file exists. Blocking the file tools alone left both wide open. `npm test` now executes the hook against crafted events for every one of these paths.
-- Optional: mirror every guardrail as permission deny rules (defense in depth, visible in `/permissions`; removed automatically when you remove the guardrail), and a switch to forbid `bypassPermissions` mode entirely.
+- `Grep` and `Glob` are the real hole a plain deny rule leaves open: a deny rule on `Read` does not stop `Grep` with `output_mode: "content"` from printing the matching lines of a file it was never allowed to `Read`, or `Glob` from confirming a guarded file exists. `Edit(path)` deny rules cover every built-in file-editing tool (including `Write` and `NotebookEdit`) but say nothing about search tools. `npm test` now executes the hook against crafted events for every one of these paths.
+- A **Bash** deny rule matches the pattern you wrote, not every form the same danger can take - `Bash(rm *)` matched literally misses `cd x && rm -rf .`. The hook's command matching runs across the whole line - chains, pipes, quotes, redirections - so a command token guard catches forms a narrow deny pattern does not.
+- Optional: mirror every guardrail as permission deny rules too (genuine defense in depth now that both layers are confirmed to hold in every mode; removed automatically when you remove the guardrail), and a switch to forbid `bypassPermissions` mode entirely for anyone who wants it ruled out at the config level regardless.
 - The hook fails open on a corrupt config so a typo can never brick every session.
 
 Scope works like settings: **User** = enforced for you everywhere; **Project** = committed with the repo, whole team gets it (hook command uses `$CLAUDE_PROJECT_DIR`; on Windows this expansion needs Git Bash, which ships alongside most Claude Code installs - otherwise prefer User scope, which uses an absolute path).
 
 Known limits, stated plainly: a deliberately broad search (`Glob **/*`) can still enumerate a guarded file's existence, a `Grep` over a parent *directory* is not blocked on the strength of one guarded file inside it, and a determined agent can find encodings no static filter catches. Guardrails raise the bar hard; they don't replace managed policies for compliance-grade enforcement.
+
+The tab opens with a plain-language explainer (what a guardrail is, the three-step
+mental model) and an empty-state **+ Add common guardrails** button that fills in
+a starter set - secrets plus the handful of commands that do the most damage by
+accident - because "type a glob pattern" is a real barrier if you have never done
+it before.
+
+### Testing a rule before you trust it
+
+A **Test a rule** box runs a sample file path or command through the *actual*
+generated hook script as a subprocess, not a reimplementation of its matching
+logic - the answer can never drift from what a live session would really do.
+It tests the rules on screen, including ones you have not pressed **Apply**
+for yet, so you can sanity-check a pattern before it goes live.
+
+### Near-miss synthesis
+
+**Close calls** mines this project's transcript history for dangerous commands
+and file touches that ran *without* being blocked - a rule proposed from
+something that actually almost happened, not a hypothetical. It flags a short,
+auditable list of signatures (`rm -rf`, `git push --force`, `DROP TABLE`,
+reads of `.env`/`*.pem`/`id_rsa`/credentials files, and a few more) that are
+not already covered by whatever guardrails are in effect for that project, and
+proposes the reusable token to add (`rm -rf`, not the whole command line it
+was seen in - adding the literal line would only ever match that one command
+again). No LLM call: matching the project's no-network constraint, this stays
+a fixed pattern list rather than a fuzzy classifier.
+
+### Coverage across your projects
+
+A **Coverage** card compares every known project's own guardrails and flags
+one whose rules are a strict subset of a sibling's - most commonly, a project
+with none at all while a sibling has some. One click adds the missing rules;
+a **Not applicable** dismissal is remembered per the exact missing-rule set,
+so it does not keep re-flagging a divergence that is intentional (a project
+that genuinely has no secrets to guard), but does resurface if what is
+actually missing changes.
 
 ## Settings catalog
 
@@ -288,6 +344,24 @@ The CLI's slash menus are fine for *running* these, weak for *managing* them. Th
 Descriptions from frontmatter show in the list, so the team can scan what exists before creating duplicates. Saves are backed up like settings; new sessions pick files up immediately.
 
 **Why the Library can be empty on a machine where Claude Code clearly has skills.** Only file-based skills live in `~/.claude/skills` (or a project's `.claude/skills`). Skills bundled with Claude Code itself, and skills that arrive through a plugin, are not files in those folders and never appear in the Library - a machine can list a dozen skills in the CLI while both scopes here are empty, and nothing is broken. The folder Maestro is actually reading is printed under the Library's kind/scope rails, so the two can be compared directly. If that path is not the one you expect, check `CLAUDE_CONFIG_DIR`: Claude Code relocates its whole config tree when that variable is set - common on managed machines with redirected home directories - and Maestro follows it.
+
+### Turning a session into a playbook
+
+A **→ playbook** button on each session row extracts its own tool-call sequence
+- commands run and files edited, in order, consecutive repeats collapsed into
+one step - into a Library command draft. It is not saved automatically: the
+draft opens in the Library editor for review, and the same Save button `+ New`
+already uses is what actually writes it. There is no LLM call to generalize
+the sequence, so this is framed honestly as a literal record of what happened
+("review before reuse" is right there in the generated frontmatter), not a
+finished skill.
+
+### Undoing a bad save
+
+Settings, Library files and Files-tab edits already kept their last 3 backups
+on every save; a **History** dropdown on each editor now lets you actually see
+and restore one, instead of copying a `.maestro-bak.*` file by hand. Restoring
+backs up whatever was on disk first, so a restore is itself undoable.
 
 ## What Maestro deliberately is not
 
@@ -350,6 +424,15 @@ Hovering the name shows the derived activity for that session (files edited, com
 ## Usage and cost
 
 A collapsible **Usage** panel sits above the session list: the last 7 and 30 days, session counts for each, tokens in→out, cache read volume, a 30-day bar chart, a per-model cost breakdown, and the folders you spend the most in. There is deliberately **no all-time total** - it only ever grows, so it says nothing about whether this week cost more than the last one, which is the question the panel exists to answer.
+
+### Cost jumps
+
+The panel also flags a folder whose spend jumped because its sessions quietly
+started running a pricier model - trailing 7 days vs. the 7 before that, a
+60%+ jump to flag, naming the model shift (e.g. `claude-fable-5 →
+claude-opus-5`). A folder with only a couple of sessions can't trigger it
+(too little data to trust), and a prior window with zero spend is treated as
+new spending, not a "jump" - there is nothing to have jumped from.
 
 ### The 7- and 30-day windows used to be wrong too
 

@@ -32,6 +32,7 @@ const { spawnSync } = require('child_process');
 const ROOT = __dirname;
 const SERVER = path.join(ROOT, 'server.js');
 const LIB = path.join(ROOT, 'lib');
+const PUBLIC_JS_DIR = path.join(ROOT, 'public', 'js');
 const PAGE = path.join(ROOT, 'public', 'index.html');
 
 let pass = 0, fail = 0;
@@ -45,33 +46,51 @@ const group = (t) => console.log('\n' + t);
 
 const libFiles = fs.readdirSync(LIB).filter((f) => f.endsWith('.js')).sort()
   .map((f) => path.join(LIB, f));
+// The frontend used to be one inline <script> in index.html; it is now these
+// files plus a boot script (see public/js/*.js and the <script src> tags at
+// the bottom of index.html). Load order matters at runtime but not for these
+// checks - every top-level const/function in a classic script is global
+// regardless of which file defines it.
+const frontendJS = fs.readdirSync(PUBLIC_JS_DIR).filter((f) => f.endsWith('.js')).sort()
+  .map((f) => path.join(PUBLIC_JS_DIR, f));
 const server = fs.readFileSync(SERVER, 'utf8');
 const page = fs.readFileSync(PAGE, 'utf8');
+// Element ids live in the page's markup only; references to them and the
+// /api/ calls that use them live wherever a view's script landed - so wiring
+// checks below read ids from `page` alone but refs/calls from `frontend`.
+const frontend = [page, ...frontendJS.map((f) => fs.readFileSync(f, 'utf8'))].join('\n');
 // Everything that ships as server-side code, for the whole-codebase greps.
 const allSource = [SERVER, ...libFiles].map((f) => fs.readFileSync(f, 'utf8')).join('\n');
 
+// CommonJS has no top-level await, and one group below (the guardrail rule
+// tester) is genuinely async - it shells out to node, same as run() in
+// lib/util.js does in the real server, which is why sync exec is banned
+// below in the first place. Everything else in this file is synchronous and
+// unaffected: wrapping the whole run in one IIFE preserves top-to-bottom
+// group order without having to thread async through every other check.
+(async () => {
+
 /* ------------------------------------------------------------ syntax */
 group('syntax');
-for (const file of [SERVER, ...libFiles, __filename]) {
+for (const file of [SERVER, ...libFiles, ...frontendJS, __filename]) {
   const r = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
   check(path.relative(ROOT, file).replace(/\\/g, '/') + ' parses', r.status === 0, r.stderr);
 }
 {
-  // The page's inline <script> must parse too - a syntax error there is a
-  // blank UI with one console message nobody sees.
-  const m = page.match(/<script>([\s\S]*)<\/script>/);
-  if (!m) bad('index.html has an inline script', 'no <script> block found');
-  else {
-    try { new Function(m[1]); ok('index.html inline script parses'); }
-    catch (e) { bad('index.html inline script parses', e.message); }
-  }
+  // The page itself must ship no inline script any more - the whole point of
+  // the split was to stop code piling up somewhere selftest.js can't see it
+  // split by file. A stray inline block would silently escape every check
+  // above and below that scans public/js/*.js instead of the page.
+  const m = page.match(/<script>[\s\S]*?<\/script>/);
+  check('index.html has no inline script (split into public/js/*.js)', !m,
+    m ? 'found one: ' + m[0].slice(0, 80) + '…' : '');
 }
 
 /* -------------------------------------------------------------- UI wiring */
 group('UI wiring');
 {
   const ids = new Set([...page.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
-  const refs = [...new Set([...page.matchAll(/\$\('#([A-Za-z0-9_-]+)'\)/g)].map((m) => m[1]))];
+  const refs = [...new Set([...frontend.matchAll(/\$\('#([A-Za-z0-9_-]+)'\)/g)].map((m) => m[1]))];
   const missing = refs.filter((r) => !ids.has(r));
   check(`every $('#id') resolves (${refs.length} refs)`, missing.length === 0,
     missing.length ? 'no element for: ' + missing.join(', ') : '');
@@ -99,7 +118,7 @@ group('route table');
   // The page is the only client. An endpoint it calls that no longer exists is
   // a 404 the user meets as a dead button.
   const served = new Set(keys.map((k) => k.split(' ')[1]));
-  const called = [...new Set([...page.matchAll(/\/api\/[a-z][a-z-]*/g)].map((m) => m[0]))];
+  const called = [...new Set([...frontend.matchAll(/\/api\/[a-z][a-z-]*/g)].map((m) => m[0]))];
   const dead = called.filter((p) => !served.has(p));
   check(`every endpoint the page calls exists (${called.length} paths)`, dead.length === 0,
     'no route for: ' + dead.join(', '));
@@ -127,6 +146,25 @@ group('route table');
   const icon = call('GET /assets/maestro.svg', '/assets/maestro.svg');
   check('GET /assets/maestro.svg serves the icon', icon.code === 200,
     `status ${icon.code} - assets must resolve from ROOT`);
+
+  const css = call('GET /styles.css', '/styles.css');
+  check('GET /styles.css resolves from ROOT', css.code === 200,
+    `status ${css.code} - split-out frontend files must resolve from ROOT too`);
+  const boot = call('GET /js/boot.js', '/js/boot.js');
+  check('GET /js/boot.js resolves from ROOT', boot.code === 200,
+    `status ${boot.code} - split-out frontend files must resolve from ROOT too`);
+
+  // Every public/js/*.js file on disk must have an exact-match route, and vice
+  // versa - a file left unrouted after a split is a silent 404 in the browser
+  // console, and a route pointing at a file that no longer exists 500s.
+  const routedJsFiles = keys.filter((k) => k.startsWith('GET /js/')).map((k) => k.slice('GET /js/'.length));
+  const onDiskJsFiles = frontendJS.map((f) => path.basename(f));
+  check('every public/js/*.js file has a route',
+    onDiskJsFiles.every((f) => routedJsFiles.includes(f)),
+    'unrouted: ' + onDiskJsFiles.filter((f) => !routedJsFiles.includes(f)).join(', '));
+  check('every GET /js/* route points at a file that exists',
+    routedJsFiles.every((f) => onDiskJsFiles.includes(f)),
+    'dangling: ' + routedJsFiles.filter((f) => !onDiskJsFiles.includes(f)).join(', '));
 }
 
 /* ------------------------------------------------------- server hygiene */
@@ -509,6 +547,360 @@ group('guardrail hook (executed for real)');
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/* ---------------------------------------------------- mirrored deny rules */
+group('mirrored deny rules (permission-rule shape)');
+{
+  // Per Claude Code's own permission docs (verified 2026-08-15): Edit(path)
+  // rules govern every built-in file-editing tool including Write and
+  // NotebookEdit, and "a Write(path) rule is never matched by the file
+  // permission checks" - Claude Code warns about it on session start.
+  // genDenyRules() used to emit one anyway.
+  const { applyGuard, readGuard } = require('./lib/guardrails');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mirror-'));
+  try {
+    applyGuard({ scope: 'project', dir, files: ['.env', '*.pem'], commands: ['rm -rf'], mirrorDeny: true });
+    const settingsFile = path.join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    const deny = settings.permissions.deny;
+    check('mirrors a Read(path) rule per guarded file', deny.includes('Read(.env)') && deny.includes('Read(*.pem)'), JSON.stringify(deny));
+    check('mirrors an Edit(path) rule per guarded file - covers Write/NotebookEdit too, per Claude Code docs',
+      deny.includes('Edit(.env)') && deny.includes('Edit(*.pem)'), JSON.stringify(deny));
+    check('never mirrors a Write(path) rule - Claude Code confirms it is never matched by file permission checks',
+      !deny.some((r) => r.startsWith('Write(')), JSON.stringify(deny));
+    check('still mirrors Bash command rules unaffected by the file-rule fix',
+      deny.includes('Bash(rm -rf)') && deny.includes('Bash(rm -rf *)'), JSON.stringify(deny));
+
+    // readGuard()'s own "does this look mirrored" check must agree, or the
+    // UI's toggle state would desync from what got written.
+    check('readGuard reports mirrorDeny true after an all-mirrored apply', readGuard('project', dir).mirrorDeny === true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+
+  // Migration: a settings.json saved by the pre-fix Maestro still has stale
+  // Write(path) entries genDenyRules() no longer generates, so the existing
+  // "remove what the previous config would have generated" logic alone
+  // cannot see them as removable. Re-applying must sweep them up anyway.
+  {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mirror-migrate-'));
+    try {
+      fs.mkdirSync(path.join(dir2, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(dir2, '.claude', 'settings.json'), JSON.stringify({
+        permissions: { deny: ['Read(.env)', 'Edit(.env)', 'Write(.env)', 'Bash(rm -rf)', 'Bash(rm -rf *)'] },
+      }, null, 2));
+      applyGuard({ scope: 'project', dir: dir2, files: ['.env'], commands: ['rm -rf'], mirrorDeny: true });
+      const deny = JSON.parse(fs.readFileSync(path.join(dir2, '.claude', 'settings.json'), 'utf8')).permissions.deny;
+      check('a stale pre-fix Write(path) rule is swept up on the next apply, not just future ones',
+        !deny.some((r) => r.startsWith('Write(')), JSON.stringify(deny));
+      check('the still-valid Read/Edit/Bash rules survive the same apply', deny.includes('Read(.env)') && deny.includes('Edit(.env)'), JSON.stringify(deny));
+    } finally { fs.rmSync(dir2, { recursive: true, force: true }); }
+  }
+}
+
+/* ---------------------------------------------------- guardrail rule tester */
+group('guardrail rule tester (against a draft config, not the saved one)');
+{
+  const { testFile, testCommand } = require('./lib/guardrail-analysis');
+
+  const cfg = { files: ['.env', 'secrets/**'], commands: ['rm -rf'] };
+  {
+    const r = await testFile(cfg, '/p/.env');
+    check('testFile: guarded file blocked', r.blocked === true, JSON.stringify(r));
+    check('testFile: reason names the rule', /\.env/.test(r.reason), r.reason);
+  }
+  {
+    const r = await testFile(cfg, '/p/src/app.js');
+    check('testFile: ordinary file allowed', r.blocked === false, JSON.stringify(r));
+  }
+  {
+    const r = await testCommand(cfg, 'cd /x && rm -rf build');
+    check('testCommand: blocked token after && is caught', r.blocked === true, JSON.stringify(r));
+  }
+  {
+    const r = await testCommand(cfg, 'ls -la');
+    check('testCommand: harmless command allowed', r.blocked === false, JSON.stringify(r));
+  }
+  {
+    // The whole point: this tests the draft in memory, not whatever (if
+    // anything) is written to disk for this scope/project.
+    const r = await testFile({ files: ['*.pem'], commands: [] }, '/p/certs/key.pem');
+    check('testFile: reacts to a config that was never applied/saved', r.blocked === true, JSON.stringify(r));
+  }
+  {
+    const r = await testFile({ files: [], commands: [] }, '/p/.env');
+    check('testFile: empty draft config blocks nothing', r.blocked === false, JSON.stringify(r));
+  }
+}
+
+/* --------------------------------------------------- near-miss synthesis */
+group('near-miss guardrail synthesis (scanning transcript history)');
+{
+  const { scanTranscriptForRisks } = require('./lib/guardrail-analysis');
+
+  const tmp = path.join(os.tmpdir(), 'maestro-selftest-nearmiss-' + process.pid + '.jsonl');
+  const toolUse = (name, input, ts) => JSON.stringify({
+    type: 'assistant', timestamp: ts,
+    message: { content: [{ type: 'tool_use', name, input }] },
+  });
+  fs.writeFileSync(tmp, [
+    toolUse('Bash', { command: 'cd /repo && rm -rf node_modules' }, '2026-03-01T10:00:00Z'),
+    toolUse('Bash', { command: 'git push --force origin main' }, '2026-03-01T10:05:00Z'),
+    toolUse('Bash', { command: 'ls -la' }, '2026-03-01T10:06:00Z'), // harmless - must not appear
+    toolUse('Read', { file_path: '/repo/.env' }, '2026-03-01T10:07:00Z'),
+    toolUse('Read', { file_path: '/repo/src/app.js' }, '2026-03-01T10:08:00Z'), // harmless - must not appear
+    // isMeta lines and non-assistant/no-content-array lines must not throw.
+    JSON.stringify({ isMeta: true, type: 'assistant', message: { content: [] } }),
+    JSON.stringify({ type: 'user', message: { content: 'hi' } }),
+    'not even json',
+  ].join('\n') + '\n');
+
+  try {
+    const hits = scanTranscriptForRisks(tmp);
+    const cmds = hits.filter((h) => h.kind === 'command');
+    const files = hits.filter((h) => h.kind === 'file');
+    check('flags a recursive force delete', cmds.some((h) => h.seen === 'cd /repo && rm -rf node_modules'), JSON.stringify(hits));
+    check('flags a force push', cmds.some((h) => h.seen === 'git push --force origin main'), JSON.stringify(hits));
+    check('does not flag a harmless command', !cmds.some((h) => h.seen === 'ls -la'), JSON.stringify(hits));
+    check('flags a read of a guarded-looking file', files.some((h) => h.seen === '/repo/.env'), JSON.stringify(hits));
+    check('does not flag an ordinary file read', !files.some((h) => h.seen === '/repo/src/app.js'), JSON.stringify(hits));
+    check('every hit carries a label and a timestamp',
+      hits.every((h) => h.label && h.ts), JSON.stringify(hits));
+    // The proposed rule is a reusable token/pattern, not the whole observed
+    // command line - "rm -rf", not "cd /repo && rm -rf node_modules", or
+    // adding it as a guard rule would only ever match that one exact line
+    // again instead of the general danger it was flagged for.
+    const delHit = cmds.find((h) => h.seen.includes('node_modules'));
+    check('a command hit suggests a short reusable token, not the full line',
+      delHit && delHit.suggest === 'rm -rf' && delHit.suggest !== delHit.seen, JSON.stringify(delHit));
+    const envHit = files.find((h) => h.seen === '/repo/.env');
+    check('a file hit suggests a reusable pattern', envHit && envHit.suggest === '.env', JSON.stringify(envHit));
+    check('malformed/meta/user lines do not throw and produce no extra hits', hits.length === 3, JSON.stringify(hits));
+  } finally { try { fs.unlinkSync(tmp); } catch { /* best effort */ } }
+
+  check('a missing file returns no hits rather than throwing',
+    Array.isArray(scanTranscriptForRisks(path.join(os.tmpdir(), 'maestro-does-not-exist.jsonl'))));
+}
+
+/* --------------------------------------------------- cross-project gaps */
+group('cross-project guardrail gap detector');
+{
+  const { ownGuardRules, computeGaps } = require('./lib/guardrail-analysis');
+  const { applyGuard } = require('./lib/guardrails');
+
+  // ownGuardRules: dir-relative (no HOME isolation needed - readGuard
+  // never touches CLAUDE_DIR for 'project'/'local' scope). Entries are
+  // kind-tagged (file: / cmd:) so a gap's `missing` list can later be split
+  // back into {files, commands} for propagate - a guard command rule and a
+  // guard file rule are never interchangeable even if the two strings
+  // happened to collide.
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-gap-proj-'));
+    try {
+      check('a project with nothing applied yet has an empty rule set',
+        ownGuardRules(dir).size === 0);
+      applyGuard({ scope: 'project', dir, files: ['.env'], commands: ['rm -rf'] });
+      const rules = ownGuardRules(dir);
+      check('picks up applied rules, tagged by kind',
+        rules.has('file:.env') && rules.has('cmd:rm -rf'), [...rules].join(','));
+      // 'project' and 'local' scope share one rule file per directory (only
+      // which settings file registers the hook differs) - applying at
+      // 'local' scope for the same dir replaces the same file, it does not
+      // add a second independent list.
+      applyGuard({ scope: 'local', dir, files: [], commands: ['git push --force'] });
+      const rules2 = ownGuardRules(dir);
+      check('applying at local scope for the same dir replaces the shared rule file',
+        rules2.has('cmd:git push --force') && !rules2.has('file:.env'), [...rules2].join(','));
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  // computeGaps: pure, no I/O - takes a Map<dir, Set<rule>> directly.
+  {
+    const rulesByDir = new Map([
+      ['/a', new Set()],                          // nothing at all
+      ['/b', new Set(['.env', 'rm -rf'])],        // a strict superset of /a
+      ['/c', new Set(['.env'])],                  // strict subset of /b
+      ['/d', new Set(['DROP TABLE'])],            // incomparable to /b - not a subset either way
+    ]);
+    const gaps = computeGaps(rulesByDir);
+    const byDir = Object.fromEntries(gaps.map((g) => [g.dir, g]));
+
+    check('flags a project with zero rules against a sibling that has some',
+      !!byDir['/a'] && byDir['/a'].sibling === '/b', JSON.stringify(gaps));
+    check('missing lists exactly the sibling rules this project lacks',
+      byDir['/a'] && byDir['/a'].missing.sort().join(',') === '.env,rm -rf', JSON.stringify(byDir['/a']));
+    check('flags a project whose rules are a strict subset of a sibling\'s',
+      !!byDir['/c'] && byDir['/c'].sibling === '/b' && byDir['/c'].missing.join(',') === 'rm -rf', JSON.stringify(byDir['/c']));
+    check('does not flag a project whose rules are not a subset of anything (incomparable, not a superset)',
+      !byDir['/d'], JSON.stringify(byDir['/d']));
+    check('does not flag the project that already has the most rules',
+      !byDir['/b'], JSON.stringify(byDir['/b']));
+
+    // Two equally-sized, equally-covering supersets: pick one deterministically
+    // (the largest) rather than nondeterministically depending on Map order.
+    const tied = new Map([
+      ['/x', new Set()],
+      ['/y', new Set(['a', 'b'])],
+      ['/z', new Set(['a', 'b', 'c'])],
+    ]);
+    const g = computeGaps(tied).find((r) => r.dir === '/x');
+    check('among multiple dominating siblings, proposes the most comprehensive one',
+      g && g.sibling === '/z', JSON.stringify(g));
+  }
+
+  // splitTaggedRules: the missing list mixes file rules and command rules -
+  // propagate has to put each back in the right array, not just append the
+  // raw strings to both.
+  {
+    const { splitTaggedRules } = require('./lib/guardrail-analysis');
+    const r = splitTaggedRules(['file:.env', 'cmd:rm -rf', 'file:*.pem', 'cmd:git push --force']);
+    check('splits file: entries into files', r.files.sort().join(',') === '*.pem,.env', JSON.stringify(r));
+    check('splits cmd: entries into commands',
+      r.commands.sort().join(',') === 'git push --force,rm -rf', JSON.stringify(r));
+    check('an empty list splits into two empty arrays',
+      splitTaggedRules([]).files.length === 0 && splitTaggedRules([]).commands.length === 0);
+  }
+
+  // Dismissal is applied by the orchestration layer (findGuardGaps, HOME-
+  // dependent, not unit tested here) by comparing each gap's `key` against
+  // what was last dismissed for that project - so the key only has to be
+  // stable per missing-rule-set and change when the missing set does.
+  {
+    const key = (rulesByDir) => computeGaps(rulesByDir).find((g) => g.dir === '/a').key;
+    const k1 = key(new Map([['/a', new Set()], ['/b', new Set(['.env', 'rm -rf'])]]));
+    const k1reordered = key(new Map([['/a', new Set()], ['/b', new Set(['rm -rf', '.env'])]]));
+    const k2 = key(new Map([['/a', new Set()], ['/b', new Set(['.env', 'rm -rf', 'DROP TABLE'])]]));
+    check('dismiss key is stable regardless of rule insertion order', k1 === k1reordered, `${k1} vs ${k1reordered}`);
+    check('dismiss key changes when the missing-rule set changes', k1 !== k2, `${k1} vs ${k2}`);
+  }
+}
+
+/* ------------------------------------------------ cost regression detector */
+group('cost regression / model-drift detector');
+{
+  const { dailyCost, detectRegression } = require('./lib/cost-analysis');
+  const { dayKey } = require('./lib/digests');
+
+  // dailyCost: sums each transcript's own byDay, same shape digests.js
+  // already computes - testable directly with temp files, no HOME isolation
+  // needed, same as the existing "spend attribution" and "token counting"
+  // tests: getDigest() computes fresh from the file when it is not already
+  // cached, and never writes the cache back to disk on its own.
+  {
+    const usage = (n) => ({ input_tokens: n, output_tokens: n, cache_read_input_tokens: 0 });
+    const line = (ts, id, model, n) => JSON.stringify({
+      type: 'assistant', requestId: id, timestamp: ts,
+      message: { id, model, usage: usage(n), content: [{ type: 'text' }] },
+    });
+    const f1 = path.join(os.tmpdir(), 'maestro-cost-a-' + process.pid + '.jsonl');
+    const f2 = path.join(os.tmpdir(), 'maestro-cost-b-' + process.pid + '.jsonl');
+    fs.writeFileSync(f1, [line('2026-03-01T10:00:00Z', 'r1', 'claude-haiku', 1000)].join('\n') + '\n');
+    fs.writeFileSync(f2, [line('2026-03-01T11:00:00Z', 'r2', 'claude-haiku', 2000)].join('\n') + '\n');
+    try {
+      const byDay = dailyCost([f1, f2]);
+      check('sums cost across multiple session files onto the same day',
+        Object.keys(byDay).length === 1 && byDay['2026-03-01'].usd > 0, JSON.stringify(byDay));
+      check('carries per-model cost within the day (for the drift annotation)',
+        byDay['2026-03-01'].models['claude-haiku'] > 0, JSON.stringify(byDay));
+      check('a file that fails to parse contributes nothing rather than throwing',
+        Object.keys(dailyCost([f1, '/does/not/exist.jsonl'])).length === 1);
+    } finally {
+      try { fs.unlinkSync(f1); fs.unlinkSync(f2); } catch { /* best effort */ }
+    }
+  }
+
+  // detectRegression: pure, deterministic - `today` is passed in rather than
+  // read from the clock.
+  {
+    const mk = (usd, models) => ({ usd, models });
+    const dayBack = (today, n) => { const [y, m, d] = today.split('-').map(Number); return dayKey(new Date(y, m - 1, d - n).getTime()); };
+    const TODAY = '2026-03-15';
+
+    // Flat spend for 14 days: no regression.
+    {
+      const byDay = {};
+      for (let i = 0; i < 14; i++) byDay[dayBack(TODAY, i)] = mk(1, { 'claude-sonnet': 1 });
+      check('flat spend across the window is not flagged',
+        detectRegression(byDay, TODAY, 14) === null, JSON.stringify(detectRegression(byDay, TODAY, 14)));
+    }
+
+    // Prior week cheap on Haiku, trailing week expensive on Opus: the
+    // exact "sessions quietly started running a pricier model" scenario.
+    {
+      const byDay = {};
+      for (let i = 7; i < 14; i++) byDay[dayBack(TODAY, i)] = mk(1, { 'claude-haiku': 1 });
+      for (let i = 0; i < 7; i++) byDay[dayBack(TODAY, i)] = mk(5, { 'claude-opus': 5 });
+      const r = detectRegression(byDay, TODAY, 14);
+      check('flags a real trailing-vs-prior jump', r !== null, JSON.stringify(r));
+      check('reports the ratio', r && r.ratio > 3, JSON.stringify(r));
+      check('names the model that got pricier (trailing window)', r && r.trailingTopModel === 'claude-opus', JSON.stringify(r));
+      check('names what it was before (prior window)', r && r.priorTopModel === 'claude-haiku', JSON.stringify(r));
+    }
+
+    // Minimum-sample floor: the same jump shape, but too few sessions total
+    // to trust it - Fable's own objection to a cheap changepoint detector.
+    {
+      const byDay = {};
+      for (let i = 7; i < 14; i++) byDay[dayBack(TODAY, i)] = mk(1, { 'claude-haiku': 1 });
+      for (let i = 0; i < 7; i++) byDay[dayBack(TODAY, i)] = mk(5, { 'claude-opus': 5 });
+      check('below the minimum-sample floor, does not flag even a real-looking jump',
+        detectRegression(byDay, TODAY, 2) === null);
+    }
+
+    // No prior-window spend at all: this is new spending, not a "jump" -
+    // there is nothing to jump from.
+    {
+      const byDay = {};
+      for (let i = 0; i < 7; i++) byDay[dayBack(TODAY, i)] = mk(5, { 'claude-opus': 5 });
+      check('a prior window with zero spend is not treated as a regression',
+        detectRegression(byDay, TODAY, 14) === null);
+    }
+
+    check('an empty day map with enough sessions is not flagged',
+      detectRegression({}, TODAY, 14) === null);
+  }
+}
+
+/* ------------------------------------------------ session to playbook */
+group('session -> Library playbook extraction');
+{
+  const { extractPlaybook, playbookMarkdown } = require('./lib/library');
+
+  const toolUse = (name, input) => JSON.stringify({
+    type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] },
+  });
+  const raw = [
+    toolUse('Bash', { command: 'npm install' }),
+    toolUse('Write', { file_path: '/repo/src/app.js' }),
+    toolUse('Edit', { file_path: '/repo/src/app.js' }),   // consecutive dup on the same file - collapse
+    toolUse('Bash', { command: 'npm test' }),
+    toolUse('Bash', { command: 'npm test' }),              // consecutive dup command - collapse
+    toolUse('Edit', { file_path: '/repo/src/util.js' }),
+    toolUse('Read', { file_path: '/repo/README.md' }),     // reads are not a "step" - not a playbook action
+    JSON.stringify({ type: 'user', message: { content: 'hi' } }), // must not throw
+    'not even json',                                       // must not throw
+  ].join('\n') + '\n';
+
+  const steps = extractPlaybook(raw);
+  check('records a command step', steps.some((s) => s.kind === 'command' && s.text === 'npm install'), JSON.stringify(steps));
+  check('records a file step', steps.some((s) => s.kind === 'file' && s.text === '/repo/src/app.js'), JSON.stringify(steps));
+  check('collapses a consecutive duplicate file edit into one step',
+    steps.filter((s) => s.kind === 'file' && s.text === '/repo/src/app.js').length === 1, JSON.stringify(steps));
+  check('collapses a consecutive duplicate command into one step',
+    steps.filter((s) => s.kind === 'command' && s.text === 'npm test').length === 1, JSON.stringify(steps));
+  check('preserves step order', steps.map((s) => s.text).indexOf('npm install') < steps.map((s) => s.text).indexOf('/repo/src/util.js'), JSON.stringify(steps));
+  check('a plain Read is not recorded as a playbook step', !steps.some((s) => s.text === '/repo/README.md'), JSON.stringify(steps));
+  check('malformed/non-assistant lines do not throw', Array.isArray(steps));
+
+  check('empty transcript content yields an empty step list', extractPlaybook('').length === 0);
+
+  const md = playbookMarkdown(steps, { title: 'My Session' });
+  check('markdown includes the title', md.includes('My Session'));
+  check('markdown numbers the steps in order', /1\..*npm install[\s\S]*2\..*app\.js/.test(md), md);
+  check('markdown is honest about not being an AI-generalized skill',
+    /not.*AI-generalized|literal record/i.test(md), md);
+  const emptyMd = playbookMarkdown([], { title: 'Nothing' });
+  check('an empty step list still produces valid, non-crashing markdown', typeof emptyMd === 'string' && emptyMd.length > 0);
+}
+
 /* ------------------------------------------------------------------ mcp */
 group('mcp (isolated ~/.claude.json)');
 {
@@ -831,6 +1223,50 @@ group('path containment');
     typeof fileRel('user', '', 'settings.json') === 'string');
 }
 
+/* -------------------------------------------------------------- backups */
+group('backups (list + restore)');
+{
+  const { listBackups, restoreBackup, rotateBackups } = require('./lib/util');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-backup-'));
+  const file = path.join(dir, 'settings.json');
+  try {
+    check('no backups for a file that was never written', listBackups(file).length === 0);
+
+    fs.writeFileSync(file, 'v1');
+    rotateBackups(file); // backs up v1, file still reads v1 until the next write
+    fs.writeFileSync(file, 'v2');
+    rotateBackups(file); // backs up v2
+    fs.writeFileSync(file, 'v3');
+
+    const backups = listBackups(file);
+    check('lists one entry per rotateBackups call', backups.length === 2, 'got ' + backups.length);
+    check('newest first', backups[0].mtimeMs >= backups[1].mtimeMs, JSON.stringify(backups));
+
+    const v2backup = backups[0]; // most recent rotate captured v2
+    restoreBackup(file, v2backup.name);
+    check('restore overwrites the file with the backup content',
+      fs.readFileSync(file, 'utf8') === 'v2', 'got ' + fs.readFileSync(file, 'utf8'));
+
+    const afterRestore = listBackups(file);
+    check('restoring backs up the pre-restore content too (v3 not lost)',
+      afterRestore.some((b) => b.name !== v2backup.name), JSON.stringify(afterRestore));
+    const preRestoreBackup = afterRestore.find((b) => b.name !== v2backup.name);
+    check('the pre-restore backup actually holds v3',
+      fs.readFileSync(path.join(dir, preRestoreBackup.name), 'utf8') === 'v3');
+
+    let threw = null;
+    try { restoreBackup(file, '../../etc/passwd'); } catch (e) { threw = e; }
+    check('restoring an unlisted/traversal name is refused', !!threw, 'call was allowed through');
+
+    let threw2 = null;
+    try { restoreBackup(file, 'settings.json.maestro-bak.nonexistent'); } catch (e) { threw2 = e; }
+    check('restoring a name that looks right but was never listed is refused', !!threw2, 'call was allowed through');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
 /* ---------------------------------------------------------------- report */
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+
+})().catch((err) => { console.error(err); process.exit(1); });

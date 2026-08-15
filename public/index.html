@@ -187,10 +187,13 @@
     <div class="card" id="g-explainer" style="margin-bottom:16px">
       <h3>What this tab does</h3>
       <div class="bd">
-        <p style="margin:0 0 var(--sp-2)">A <b>guardrail</b> is a hard block on a file or a command - stronger than a
-          permission rule. A permission <b>deny</b> rule is skipped entirely in <code>bypassPermissions</code> mode;
-          a guardrail still blocks there, because it runs as a script <i>before</i> the permission system is asked at
-          all, and Claude is only told "no" and why.</p>
+        <p style="margin:0 0 var(--sp-2)">A <b>guardrail</b> is a hard block on a file or a command, enforced by a
+          generated script rather than a plain permission rule. Both a permission <b>deny</b> rule and this hook
+          block in every permission mode, including <code>bypassPermissions</code> - Claude Code checks deny rules
+          and hooks before it even looks at the mode. What a plain deny rule does <i>not</i> cover: <code>Grep</code>
+          and <code>Glob</code> against a guarded path (a deny rule on <code>Read</code> leaves both wide open), and a
+          Bash command that mentions the guarded file or token anywhere but the exact matched form. This hook checks
+          all of that, and Claude is only told "no" and why.</p>
         <ol style="margin:0;padding-left:1.2em;color:var(--dim);font:13px var(--sans)">
           <li>List the files and commands to block below (or use the starter set)</li>
           <li>Press <b>Apply guardrails</b> - this writes the hook once, and edits after that just update its list instantly</li>
@@ -290,9 +293,9 @@
           <input type="checkbox" id="gbypass" style="width:auto"> Forbid <b>bypassPermissions</b> mode entirely (permissions.disableBypassPermissionsMode)
         </label>
         <table class="eff" style="margin-bottom:12px">
-          <tr><td style="color:var(--dim)">layer \ mode</td><td>default</td><td>acceptEdits</td><td>auto</td><td>bypassPermissions</td></tr>
-          <tr><td>deny rule</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks</td><td style="color:var(--danger)">skipped</td></tr>
-          <tr><td>Maestro hook</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks</td></tr>
+          <tr><td style="color:var(--dim)">layer \ tool</td><td>Read / Edit / Write</td><td>Grep / Glob on the path</td><td>Bash mentioning it, any form</td></tr>
+          <tr><td>deny rule</td><td style="color:var(--ok)">blocks</td><td style="color:var(--danger)">not checked</td><td style="color:var(--danger)">exact pattern only</td></tr>
+          <tr><td>Maestro hook</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks</td><td style="color:var(--ok)">blocks anywhere in the line</td></tr>
         </table>
         <div class="layerline" id="gstatus"></div>
       </div>

@@ -547,6 +547,55 @@ group('guardrail hook (executed for real)');
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/* ---------------------------------------------------- mirrored deny rules */
+group('mirrored deny rules (permission-rule shape)');
+{
+  // Per Claude Code's own permission docs (verified 2026-08-15): Edit(path)
+  // rules govern every built-in file-editing tool including Write and
+  // NotebookEdit, and "a Write(path) rule is never matched by the file
+  // permission checks" - Claude Code warns about it on session start.
+  // genDenyRules() used to emit one anyway.
+  const { applyGuard, readGuard } = require('./lib/guardrails');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mirror-'));
+  try {
+    applyGuard({ scope: 'project', dir, files: ['.env', '*.pem'], commands: ['rm -rf'], mirrorDeny: true });
+    const settingsFile = path.join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    const deny = settings.permissions.deny;
+    check('mirrors a Read(path) rule per guarded file', deny.includes('Read(.env)') && deny.includes('Read(*.pem)'), JSON.stringify(deny));
+    check('mirrors an Edit(path) rule per guarded file - covers Write/NotebookEdit too, per Claude Code docs',
+      deny.includes('Edit(.env)') && deny.includes('Edit(*.pem)'), JSON.stringify(deny));
+    check('never mirrors a Write(path) rule - Claude Code confirms it is never matched by file permission checks',
+      !deny.some((r) => r.startsWith('Write(')), JSON.stringify(deny));
+    check('still mirrors Bash command rules unaffected by the file-rule fix',
+      deny.includes('Bash(rm -rf)') && deny.includes('Bash(rm -rf *)'), JSON.stringify(deny));
+
+    // readGuard()'s own "does this look mirrored" check must agree, or the
+    // UI's toggle state would desync from what got written.
+    check('readGuard reports mirrorDeny true after an all-mirrored apply', readGuard('project', dir).mirrorDeny === true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+
+  // Migration: a settings.json saved by the pre-fix Maestro still has stale
+  // Write(path) entries genDenyRules() no longer generates, so the existing
+  // "remove what the previous config would have generated" logic alone
+  // cannot see them as removable. Re-applying must sweep them up anyway.
+  {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'maestro-mirror-migrate-'));
+    try {
+      fs.mkdirSync(path.join(dir2, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(dir2, '.claude', 'settings.json'), JSON.stringify({
+        permissions: { deny: ['Read(.env)', 'Edit(.env)', 'Write(.env)', 'Bash(rm -rf)', 'Bash(rm -rf *)'] },
+      }, null, 2));
+      applyGuard({ scope: 'project', dir: dir2, files: ['.env'], commands: ['rm -rf'], mirrorDeny: true });
+      const deny = JSON.parse(fs.readFileSync(path.join(dir2, '.claude', 'settings.json'), 'utf8')).permissions.deny;
+      check('a stale pre-fix Write(path) rule is swept up on the next apply, not just future ones',
+        !deny.some((r) => r.startsWith('Write(')), JSON.stringify(deny));
+      check('the still-valid Read/Edit/Bash rules survive the same apply', deny.includes('Read(.env)') && deny.includes('Edit(.env)'), JSON.stringify(deny));
+    } finally { fs.rmSync(dir2, { recursive: true, force: true }); }
+  }
+}
+
 /* ---------------------------------------------------- guardrail rule tester */
 group('guardrail rule tester (against a draft config, not the saved one)');
 {
